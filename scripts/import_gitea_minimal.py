@@ -711,6 +711,7 @@ class Importer:
 
         self.import_activity_actions()
 
+        self.target.execute("PRAGMA journal_mode=DELETE")
         self.target.commit()
         self.write_report()
 

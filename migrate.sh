@@ -168,6 +168,7 @@ for section in ("mirror", "cron.update_mirrors"):
 
 parser.set("database", "DB_TYPE", "sqlite3")
 parser.set("database", "PATH", "/var/lib/gitea/data/forgejo.db")
+parser.set("database", "SQLITE_JOURNAL_MODE", "DELETE")
 
 parser.set("repository", "ROOT", "/var/lib/gitea/data/forgejo-repositories")
 
