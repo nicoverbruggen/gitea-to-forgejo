@@ -36,3 +36,23 @@ The goal: I can run a script called: `migrate.sh`, which will:
 (How the runners are set up will be migrated later.)
 
 --> You can find the actual plan to execute at: `PLAN.md`
+
+## Current workflow
+
+Run:
+
+```bash
+./migrate.sh
+```
+
+This will:
+
+- rebuild `./forgejo`
+- start a local Forgejo 15.0 instance with Podman
+- import the minimal supported data set from `./backup/gitea`
+- leave Forgejo running on `http://localhost:3000`
+
+Generated outputs:
+
+- `./forgejo/temporary-passwords.txt`
+- `./forgejo/migration-report.md`

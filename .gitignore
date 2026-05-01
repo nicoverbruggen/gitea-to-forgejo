@@ -1,2 +1,4 @@
 backup
 server-setup
+forgejo
+__pycache__/
