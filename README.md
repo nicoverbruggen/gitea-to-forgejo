@@ -59,3 +59,10 @@ Generated outputs:
 - `./forgejo/temporary-passwords.txt`
 - `./forgejo/migration-report.md`
 - `./forgejo/validation-report.md`
+
+## Todo
+
+- Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo)
+- Use Forgejo customizations instead (it's one of the repos)
+- Migrate issues etc.
+- Potentially, apply some CSS fixes to the custom theme to improve the look & feel of the Forgejo client; should be inspired by Codeberg's modifications (can we find that online somewhere?)
