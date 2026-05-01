@@ -68,6 +68,9 @@ def path_join(*segments: str) -> str:
     return "/".join(urllib.parse.quote(segment, safe="") for segment in segments)
 
 
+SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 8, 9, 16, 17, 18, 19, 20}
+
+
 @dataclass
 class RepoWarning:
     owner: str
@@ -135,6 +138,8 @@ class Importer:
         self.state_path = state_path
         self.api = ForgejoAPI(base_url, token) if base_url and token else None
         self.warnings: list[RepoWarning] = []
+        self.imported_activity_count = 0
+        self.skipped_activity_count = 0
 
         self.source = sqlite3.connect(source_db)
         self.source.row_factory = sqlite3.Row
@@ -704,6 +709,8 @@ class Importer:
                     ),
                 )
 
+        self.import_activity_actions()
+
         self.target.commit()
         self.write_report()
 
@@ -790,6 +797,89 @@ class Importer:
             shutil.rmtree(target_path)
         shutil.copytree(source_path, target_path, symlinks=True)
 
+    def import_activity_actions(self) -> None:
+        assert self.target is not None
+
+        log("Replacing import-generated activity feed entries with source repository activity")
+        self.target.execute("delete from action")
+
+        source_user_map = {
+            row["id"]: self.find_target_user(row["name"])["id"]
+            for row in self.source.execute("select id, name from user order by id")
+        }
+        source_repo_map = {
+            row["id"]: self.find_target_repo(row["owner_name"], row["lower_name"])["id"]
+            for row in self.source_repositories
+        }
+
+        max_action_id = 0
+        imported = 0
+        skipped = 0
+
+        for action in self.fetch_all("select * from action order by id"):
+            op_type = int(action["op_type"] or 0)
+            comment_id = int(action["comment_id"] or 0)
+            is_deleted = int(action["is_deleted"] or 0)
+
+            if op_type not in SUPPORTED_ACTIVITY_OP_TYPES or comment_id != 0 or is_deleted != 0:
+                skipped += 1
+                continue
+
+            user_id = int(action["user_id"] or 0)
+            act_user_id = int(action["act_user_id"] or 0)
+            repo_id = int(action["repo_id"] or 0)
+
+            if user_id and user_id not in source_user_map:
+                skipped += 1
+                continue
+            if act_user_id and act_user_id not in source_user_map:
+                skipped += 1
+                continue
+            if repo_id and repo_id not in source_repo_map:
+                skipped += 1
+                continue
+
+            self.target.execute(
+                """
+                insert into action (
+                    id,
+                    user_id,
+                    op_type,
+                    act_user_id,
+                    repo_id,
+                    comment_id,
+                    ref_name,
+                    is_private,
+                    content,
+                    created_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action["id"],
+                    source_user_map.get(user_id, 0),
+                    op_type,
+                    source_user_map.get(act_user_id, 0),
+                    source_repo_map.get(repo_id, 0),
+                    0,
+                    nullable_text(action["ref_name"]),
+                    int(action["is_private"] or 0),
+                    nullable_text(action["content"]),
+                    action["created_unix"],
+                ),
+            )
+            imported += 1
+            max_action_id = max(max_action_id, int(action["id"]))
+
+        self.target.execute("delete from sqlite_sequence where name = 'action'")
+        self.target.execute(
+            "insert into sqlite_sequence (name, seq) values ('action', ?)",
+            (max_action_id,),
+        )
+
+        self.imported_activity_count = imported
+        self.skipped_activity_count = skipped
+
     def load_state(self) -> None:
         if not self.state_path.exists():
             self.warnings = []
@@ -813,7 +903,9 @@ class Importer:
             "pull_mirrors": self.target.execute("select count(*) from mirror").fetchone()[0],
             "push_mirrors": self.target.execute("select count(*) from push_mirror").fetchone()[0],
             "ssh_keys": self.target.execute("select count(*) from public_key").fetchone()[0],
+            "activity_entries": self.target.execute("select count(*) from action").fetchone()[0],
         }
+        source_activity_entries = self.source.execute("select count(*) from action").fetchone()[0]
 
         lines = [
             "# Migration Report",
@@ -830,6 +922,7 @@ class Importer:
             f"- Pull mirrors: {len(self.source_mirrors)}",
             f"- Push mirrors: {sum(len(v) for v in self.source_push_mirrors.values())}",
             f"- SSH keys: {sum(len(v) for v in self.source_keys.values())}",
+            f"- Activity entries: {source_activity_entries}",
             "",
             "## Target Counts",
             "",
@@ -841,6 +934,12 @@ class Importer:
             f"- Pull mirrors: {target_counts['pull_mirrors']} (expected after fallbacks: {expected_pull_mirrors})",
             f"- Push mirrors: {target_counts['push_mirrors']}",
             f"- SSH keys: {target_counts['ssh_keys']}",
+            f"- Activity entries: {target_counts['activity_entries']}",
+            "",
+            "## Activity Feed Notes",
+            "",
+            f"- Imported repository-safe activity rows: {self.imported_activity_count}",
+            f"- Skipped activity rows that depend on unmigrated issues, comments, pull requests, or releases: {self.skipped_activity_count}",
             "",
             "## Warnings",
             "",

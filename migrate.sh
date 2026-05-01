@@ -162,6 +162,10 @@ for section in ("database", "repository", "server", "security", "oauth2", "servi
     if not parser.has_section(section):
         parser.add_section(section)
 
+for section in ("mirror", "cron.update_mirrors"):
+    if not parser.has_section(section):
+        parser.add_section(section)
+
 parser.set("database", "DB_TYPE", "sqlite3")
 parser.set("database", "PATH", "/var/lib/gitea/data/forgejo.db")
 
@@ -190,6 +194,13 @@ parser.set("oauth2", "JWT_SECRET", secrets.token_urlsafe(32))
 parser.set("service", "DISABLE_REGISTRATION", "true")
 if not parser.has_option("service", "REQUIRE_SIGNIN_VIEW"):
     parser.set("service", "REQUIRE_SIGNIN_VIEW", "false")
+
+# This local verification instance should never mirror to or from remotes.
+parser.set("mirror", "ENABLED", "false")
+parser.set("mirror", "DISABLE_NEW_PULL", "true")
+parser.set("mirror", "DISABLE_NEW_PUSH", "true")
+parser.set("cron.update_mirrors", "PULL_LIMIT", "0")
+parser.set("cron.update_mirrors", "PUSH_LIMIT", "0")
 
 mailer_items = []
 if parser.has_section("mailer"):
@@ -313,7 +324,7 @@ main() {
         --name "$FORGEJO_CONTAINER_NAME" \
         -p "${FORGEJO_HTTP_PORT}:${FORGEJO_HTTP_PORT}" \
         -p "${FORGEJO_SSH_PORT}:${FORGEJO_SSH_PORT}" \
-        -v "$(bootstrap_mount)" \
+        -v "$(runtime_mount)" \
         "$FORGEJO_IMAGE" >/dev/null
 
     log "Waiting for Forgejo to accept HTTP requests"
