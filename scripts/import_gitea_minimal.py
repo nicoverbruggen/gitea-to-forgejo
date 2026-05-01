@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -140,6 +141,9 @@ class Importer:
         self.warnings: list[RepoWarning] = []
         self.imported_activity_count = 0
         self.skipped_activity_count = 0
+        self.pruned_package_version_count = 0
+        self.pruned_package_file_count = 0
+        self.pruned_package_blob_count = 0
 
         self.source = sqlite3.connect(source_db)
         self.source.row_factory = sqlite3.Row
@@ -169,6 +173,18 @@ class Importer:
             "select * from push_mirror order by repo_id, id",
             "repo_id",
         )
+        self.source_packages = self.fetch_all("select * from package order by id")
+        self.source_package_versions = self.fetch_all("select * from package_version order by id")
+        self.source_package_files = self.fetch_all("select * from package_file order by id")
+        self.source_package_blobs = self.fetch_all("select * from package_blob order by id")
+        self.source_package_properties = self.fetch_all("select * from package_property order by id")
+        self.source_package_cleanup_rules = self.fetch_all("select * from package_cleanup_rule order by id")
+        (
+            self.kept_source_package_versions,
+            self.kept_source_package_files,
+            self.kept_source_package_blobs,
+            self.kept_source_package_properties,
+        ) = self.compute_retained_package_rows()
 
     def fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         cursor = self.source.execute(query, params)
@@ -709,6 +725,7 @@ class Importer:
                     ),
                 )
 
+        self.import_packages()
         self.import_activity_actions()
 
         self.target.execute("PRAGMA journal_mode=DELETE")
@@ -797,6 +814,296 @@ class Importer:
         if target_path.exists():
             shutil.rmtree(target_path)
         shutil.copytree(source_path, target_path, symlinks=True)
+
+    def compute_retained_package_rows(
+        self,
+    ) -> tuple[list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row]]:
+        package_ids = {row["id"] for row in self.source_packages}
+        referenced_digests = {
+            normalize_text(row["value"])
+            for row in self.source_package_properties
+            if normalize_int(row["ref_type"]) == 0 and normalize_text(row["name"]) == "container.manifest.reference"
+        }
+
+        kept_versions = [
+            row
+            for row in self.source_package_versions
+            if not normalize_text(row["version"]).startswith("sha256:")
+            or normalize_text(row["version"]) in referenced_digests
+        ]
+        kept_version_ids = {row["id"] for row in kept_versions}
+
+        kept_files = [row for row in self.source_package_files if row["version_id"] in kept_version_ids]
+        kept_file_ids = {row["id"] for row in kept_files}
+        kept_blob_ids = {row["blob_id"] for row in kept_files}
+        kept_blobs = [row for row in self.source_package_blobs if row["id"] in kept_blob_ids]
+
+        kept_properties = [
+            row
+            for row in self.source_package_properties
+            if (
+                normalize_int(row["ref_type"]) == 0
+                and normalize_int(row["ref_id"]) in kept_version_ids
+            )
+            or (
+                normalize_int(row["ref_type"]) == 1
+                and normalize_int(row["ref_id"]) in kept_file_ids
+            )
+            or (
+                normalize_int(row["ref_type"]) == 2
+                and normalize_int(row["ref_id"]) in package_ids
+            )
+        ]
+
+        self.pruned_package_version_count = len(self.source_package_versions) - len(kept_versions)
+        self.pruned_package_file_count = len(self.source_package_files) - len(kept_files)
+        self.pruned_package_blob_count = len(self.source_package_blobs) - len(kept_blobs)
+
+        return kept_versions, kept_files, kept_blobs, kept_properties
+
+    def import_packages(self) -> None:
+        assert self.target is not None
+
+        log("Replacing package registry data and restoring package blobs offline")
+
+        source_packages_dir = self.backup_root / "data" / "packages"
+        target_packages_dir = self.forgejo_root / "data" / "packages"
+        if target_packages_dir.exists():
+            shutil.rmtree(target_packages_dir)
+        if source_packages_dir.exists():
+            shutil.copytree(source_packages_dir, target_packages_dir, symlinks=True)
+            for root, dirs, files in os.walk(target_packages_dir):
+                os.chmod(root, 0o777)
+                for dirname in dirs:
+                    os.chmod(Path(root) / dirname, 0o777)
+                for filename in files:
+                    os.chmod(Path(root) / filename, 0o666)
+        else:
+            target_packages_dir.mkdir(parents=True, exist_ok=True)
+
+        retained_blob_hashes = {normalize_text(row["hash_sha256"]) for row in self.kept_source_package_blobs}
+        for blob in self.source_package_blobs:
+            blob_hash = normalize_text(blob["hash_sha256"])
+            if blob_hash in retained_blob_hashes:
+                continue
+            blob_path = target_packages_dir / blob_hash[:2] / blob_hash[2:4] / blob_hash
+            if blob_path.exists():
+                blob_path.unlink()
+
+        self.target.execute("delete from package_property")
+        self.target.execute("delete from package_file")
+        self.target.execute("delete from package_version")
+        self.target.execute("delete from package_blob")
+        self.target.execute("delete from package_cleanup_rule")
+        self.target.execute("delete from package")
+
+        source_user_rows = {
+            row["id"]: row["name"]
+            for row in self.fetch_all("select id, name from user order by id")
+        }
+        target_user_rows = {
+            row["name"]: row["id"]
+            for row in self.target.execute("select id, name from user order by id").fetchall()
+        }
+        user_id_map = {
+            source_id: target_user_rows[name]
+            for source_id, name in source_user_rows.items()
+            if name in target_user_rows
+        }
+
+        source_repo_rows = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.source_repositories
+        }
+        target_repo_rows = {
+            (row["owner_name"], row["lower_name"]): row["id"]
+            for row in self.target.execute(
+                """
+                select repository.id, owner.name as owner_name, repository.lower_name
+                from repository
+                join user owner on owner.id = repository.owner_id
+                order by repository.id
+                """,
+            ).fetchall()
+        }
+        repo_id_map = {
+            source_id: target_repo_rows[key]
+            for source_id, key in source_repo_rows.items()
+            if key in target_repo_rows
+        }
+
+        for package in self.source_packages:
+            self.target.execute(
+                """
+                insert into package (
+                    id,
+                    owner_id,
+                    repo_id,
+                    type,
+                    name,
+                    lower_name,
+                    semver_compatible,
+                    is_internal
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    package["id"],
+                    user_id_map[package["owner_id"]],
+                    repo_id_map.get(package["repo_id"], 0) if package["repo_id"] else 0,
+                    package["type"],
+                    package["name"],
+                    package["lower_name"],
+                    package["semver_compatible"],
+                    package["is_internal"],
+                ),
+            )
+
+        for blob in self.kept_source_package_blobs:
+            self.target.execute(
+                """
+                insert into package_blob (
+                    id,
+                    size,
+                    hash_md5,
+                    hash_sha1,
+                    hash_sha256,
+                    hash_sha512,
+                    hash_blake2b,
+                    created_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    blob["id"],
+                    blob["size"],
+                    blob["hash_md5"],
+                    blob["hash_sha1"],
+                    blob["hash_sha256"],
+                    blob["hash_sha512"],
+                    None,
+                    blob["created_unix"],
+                ),
+            )
+
+        for version in self.kept_source_package_versions:
+            self.target.execute(
+                """
+                insert into package_version (
+                    id,
+                    package_id,
+                    creator_id,
+                    version,
+                    lower_version,
+                    created_unix,
+                    is_internal,
+                    metadata_json,
+                    download_count
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version["id"],
+                    version["package_id"],
+                    user_id_map.get(version["creator_id"], 0),
+                    version["version"],
+                    version["lower_version"],
+                    version["created_unix"],
+                    version["is_internal"],
+                    version["metadata_json"],
+                    version["download_count"],
+                ),
+            )
+
+        for package_file in self.kept_source_package_files:
+            self.target.execute(
+                """
+                insert into package_file (
+                    id,
+                    version_id,
+                    blob_id,
+                    name,
+                    lower_name,
+                    composite_key,
+                    is_lead,
+                    created_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    package_file["id"],
+                    package_file["version_id"],
+                    package_file["blob_id"],
+                    package_file["name"],
+                    package_file["lower_name"],
+                    package_file["composite_key"],
+                    package_file["is_lead"],
+                    package_file["created_unix"],
+                ),
+            )
+
+        for package_property in self.kept_source_package_properties:
+            self.target.execute(
+                """
+                insert into package_property (id, ref_type, ref_id, name, value)
+                values (?, ?, ?, ?, ?)
+                """,
+                (
+                    package_property["id"],
+                    package_property["ref_type"],
+                    package_property["ref_id"],
+                    package_property["name"],
+                    package_property["value"],
+                ),
+            )
+
+        for cleanup_rule in self.source_package_cleanup_rules:
+            self.target.execute(
+                """
+                insert into package_cleanup_rule (
+                    id,
+                    enabled,
+                    owner_id,
+                    type,
+                    keep_count,
+                    keep_pattern,
+                    remove_days,
+                    remove_pattern,
+                    match_full_name,
+                    created_unix,
+                    updated_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cleanup_rule["id"],
+                    cleanup_rule["enabled"],
+                    user_id_map[cleanup_rule["owner_id"]],
+                    cleanup_rule["type"],
+                    cleanup_rule["keep_count"],
+                    cleanup_rule["keep_pattern"],
+                    cleanup_rule["remove_days"],
+                    cleanup_rule["remove_pattern"],
+                    cleanup_rule["match_full_name"],
+                    cleanup_rule["created_unix"],
+                    cleanup_rule["updated_unix"],
+                ),
+            )
+
+        for table_name in (
+            "package",
+            "package_blob",
+            "package_cleanup_rule",
+            "package_file",
+            "package_property",
+            "package_version",
+        ):
+            max_id = self.target.execute(f"select coalesce(max(id), 0) from {table_name}").fetchone()[0]
+            self.target.execute("delete from sqlite_sequence where name = ?", (table_name,))
+            self.target.execute(
+                "insert into sqlite_sequence (name, seq) values (?, ?)",
+                (table_name, max_id),
+            )
 
     def import_activity_actions(self) -> None:
         assert self.target is not None
@@ -905,6 +1212,10 @@ class Importer:
             "push_mirrors": self.target.execute("select count(*) from push_mirror").fetchone()[0],
             "ssh_keys": self.target.execute("select count(*) from public_key").fetchone()[0],
             "activity_entries": self.target.execute("select count(*) from action").fetchone()[0],
+            "packages": self.target.execute("select count(*) from package").fetchone()[0],
+            "package_versions": self.target.execute("select count(*) from package_version").fetchone()[0],
+            "package_files": self.target.execute("select count(*) from package_file").fetchone()[0],
+            "package_blobs": self.target.execute("select count(*) from package_blob").fetchone()[0],
         }
         source_activity_entries = self.source.execute("select count(*) from action").fetchone()[0]
 
@@ -924,6 +1235,10 @@ class Importer:
             f"- Push mirrors: {sum(len(v) for v in self.source_push_mirrors.values())}",
             f"- SSH keys: {sum(len(v) for v in self.source_keys.values())}",
             f"- Activity entries: {source_activity_entries}",
+            f"- Packages: {len(self.source_packages)}",
+            f"- Package versions: {len(self.source_package_versions)}",
+            f"- Package files: {len(self.source_package_files)}",
+            f"- Package blobs: {len(self.source_package_blobs)}",
             "",
             "## Target Counts",
             "",
@@ -936,6 +1251,20 @@ class Importer:
             f"- Push mirrors: {target_counts['push_mirrors']}",
             f"- SSH keys: {target_counts['ssh_keys']}",
             f"- Activity entries: {target_counts['activity_entries']}",
+            f"- Packages: {target_counts['packages']}",
+            f"- Package versions: {target_counts['package_versions']}",
+            f"- Package files: {target_counts['package_files']}",
+            f"- Package blobs: {target_counts['package_blobs']}",
+            "",
+            "## Package Compatibility Notes",
+            "",
+            f"- Forgejo 15 automatically prunes unreferenced `sha256:*` OCI manifests on startup.",
+            f"- Expected retained package versions after compatibility cleanup: {len(self.kept_source_package_versions)}",
+            f"- Expected retained package files after compatibility cleanup: {len(self.kept_source_package_files)}",
+            f"- Expected retained package blobs after compatibility cleanup: {len(self.kept_source_package_blobs)}",
+            f"- Pruned package versions during import: {self.pruned_package_version_count}",
+            f"- Pruned package files during import: {self.pruned_package_file_count}",
+            f"- Pruned package blobs during import: {self.pruned_package_blob_count}",
             "",
             "## Activity Feed Notes",
             "",

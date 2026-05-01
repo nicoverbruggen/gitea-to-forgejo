@@ -22,8 +22,10 @@ FORGEJO_BASE_URL="http://localhost:${FORGEJO_HTTP_PORT}"
 PASSWORD_FILE="$FORGEJO_DIR/temporary-passwords.txt"
 TOKEN_FILE="$FORGEJO_DIR/admin-token.txt"
 REPORT_FILE="$FORGEJO_DIR/migration-report.md"
+VALIDATION_REPORT="$FORGEJO_DIR/validation-report.md"
 STATE_FILE="$FORGEJO_DIR/import-state.json"
 IMPORTER="$ROOT_DIR/scripts/import_gitea_minimal.py"
+VALIDATOR="$ROOT_DIR/scripts/validate_migration.py"
 
 log() {
     printf '[migrate] %s\n' "$*"
@@ -280,6 +282,7 @@ main() {
     require_command sqlite3
     require_command curl
     require_command python3
+    require_command git
 
     if [ ! -f "$SOURCE_DB" ]; then
         printf 'Missing source database: %s\n' "$SOURCE_DB" >&2
@@ -288,6 +291,11 @@ main() {
 
     if [ ! -f "$IMPORTER" ]; then
         printf 'Missing importer: %s\n' "$IMPORTER" >&2
+        exit 1
+    fi
+
+    if [ ! -f "$VALIDATOR" ]; then
+        printf 'Missing validator: %s\n' "$VALIDATOR" >&2
         exit 1
     fi
 
@@ -376,12 +384,22 @@ main() {
     podman start "$FORGEJO_CONTAINER_NAME" >/dev/null
     wait_for_forgejo
 
+    log "Validating migrated data"
+    python3 "$VALIDATOR" \
+        --source-db "$SOURCE_DB" \
+        --forgejo-db "$FORGEJO_DB" \
+        --backup-root "$SOURCE_DIR" \
+        --forgejo-root "$FORGEJO_DIR" \
+        --state-path "$STATE_FILE" \
+        --report-path "$VALIDATION_REPORT"
+
     log "Migration complete"
     printf '\n'
     printf 'Forgejo URL: %s\n' "$FORGEJO_BASE_URL"
     printf 'SSH URL base: ssh://git@localhost:%s/\n' "$FORGEJO_SSH_PORT"
     printf 'Temporary passwords: %s\n' "$PASSWORD_FILE"
     printf 'Migration report: %s\n' "$REPORT_FILE"
+    printf 'Validation report: %s\n' "$VALIDATION_REPORT"
 }
 
 main "$@"

@@ -50,9 +50,12 @@ This will:
 - rebuild `./forgejo`
 - start a local Forgejo 15.0 instance with Podman
 - import the minimal supported data set from `./backup/gitea`
+- import the container package registry data that Forgejo 15 can retain
+- validate the migrated data against the backup and fail if mismatches are found
 - leave Forgejo running on `http://localhost:3000`
 
 Generated outputs:
 
 - `./forgejo/temporary-passwords.txt`
 - `./forgejo/migration-report.md`
+- `./forgejo/validation-report.md`
