@@ -142,7 +142,7 @@ Some fields are carried across with Forgejo-side normalization because the schem
 
 ## What is not migrated
 
-- Gitea Actions runtime state, logs, schedules, artifacts, runner registrations, and related tokens.
+- Gitea Actions runtime state, logs, schedules, artifacts, runner registrations, and related tokens/secrets.
 - OCI package blobs and manifest rows that Forgejo 15 prunes as dangling data during import.
 - Source branding and static overrides from `custom/public/*`, such as logos, favicons, and `robots.txt`.
 - Two-factor authentication state, WebAuthn credentials, and per-user theme selections.
