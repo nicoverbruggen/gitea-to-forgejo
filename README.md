@@ -8,6 +8,7 @@ This script aims to transfer your existing data from **Gitea 1.26 to Forgejo 15.
 
 - An (unzipped) backup of your Gitea installation in `./backup/gitea`.
 - The following dependencies installed locally: `podman`, `sqlite3`, `curl`, `python3`, and `git`.
+- At least one source admin user in the backup. The migration picks the first admin user by ID and uses that account to generate its temporary importer token.
 
 ## What is not migrated
 
@@ -25,7 +26,7 @@ This script aims to transfer your existing data from **Gitea 1.26 to Forgejo 15.
 ## What you still need to do
 
 - Validate login credentials approach (see more below)
-- Copy and test any customizations in `./custom`.
+- Copy and test any remaining customizations that are not migrated automatically into `./forgejo/custom`.
 - Enable push and pull in configuration (see more below)
 
 ## How to use
@@ -39,6 +40,7 @@ Run:
 This will:
 
 - rebuild `./forgejo`
+- rebuild `./report`
 - rebuild `./backup/forgejo`
 - start a local Forgejo 15.0 instance with Podman
 - import users, organizations, teams, repositories, pull mirrors, push mirror rows, issues, comments, releases, stars, watches, collaborators, and attachments from `./backup/gitea`
@@ -58,6 +60,16 @@ If you'd like to generate random passwords which you can send to users:
 
 ```bash
 ./migrate.sh --randomize-passwords
+```
+
+Optional environment overrides:
+
+```bash
+FORGEJO_IMAGE=codeberg.org/forgejo/forgejo:15.0-rootless \
+FORGEJO_CONTAINER_NAME=forgejo-migration-local \
+FORGEJO_HTTP_PORT=3000 \
+FORGEJO_SSH_PORT=2222 \
+./migrate.sh
 ```
 
 ### Mirror behavior

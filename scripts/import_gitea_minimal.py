@@ -133,6 +133,7 @@ class Importer:
         forgejo_db: Path,
         backup_root: Path,
         forgejo_root: Path,
+        admin_username: str,
         password_mode: str,
         report_path: Path,
         state_path: Path,
@@ -144,6 +145,7 @@ class Importer:
         self.forgejo_db = forgejo_db
         self.backup_root = backup_root
         self.forgejo_root = forgejo_root
+        self.admin_username = admin_username
         self.password_mode = password_mode
         self.report_path = report_path
         self.state_path = state_path
@@ -278,7 +280,7 @@ class Importer:
         for source_org in self.source_orgs:
             self.api.request(
                 "POST",
-                f"/api/v1/admin/users/{path_join('nico')}/orgs",
+                f"/api/v1/admin/users/{path_join(self.admin_username)}/orgs",
                 {
                     "username": source_org["name"],
                     "full_name": nullable_text(source_org["full_name"]),
@@ -2143,6 +2145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forgejo-db", required=True, type=Path)
     parser.add_argument("--backup-root", required=True, type=Path)
     parser.add_argument("--forgejo-root", required=True, type=Path)
+    parser.add_argument("--admin-username", required=True)
     parser.add_argument("--password-mode", choices=("preserve", "randomize"), default="preserve")
     parser.add_argument("--report-path", required=True, type=Path)
     parser.add_argument("--state-path", required=True, type=Path)
@@ -2164,6 +2167,7 @@ def main() -> int:
             forgejo_db=args.forgejo_db,
             backup_root=args.backup_root,
             forgejo_root=args.forgejo_root,
+            admin_username=args.admin_username,
             password_mode=args.password_mode,
             report_path=args.report_path,
             state_path=args.state_path,

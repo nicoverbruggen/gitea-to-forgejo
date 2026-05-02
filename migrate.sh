@@ -21,6 +21,7 @@ FORGEJO_HTTP_PORT="${FORGEJO_HTTP_PORT:-3000}"
 FORGEJO_SSH_PORT="${FORGEJO_SSH_PORT:-2222}"
 FORGEJO_BASE_URL="http://localhost:${FORGEJO_HTTP_PORT}"
 PASSWORD_MODE="preserve"
+ADMIN_USERNAME=""
 
 BOOTSTRAP_PASSWORD_FILE="$REPORT_DIR/bootstrap-passwords.txt"
 PASSWORD_FILE="$REPORT_DIR/temporary-passwords.txt"
@@ -147,6 +148,14 @@ PY
 password_for_user() {
     local username="$1"
     awk -F'|' -v wanted="$username" '$1 == wanted { print $2 }' "$BOOTSTRAP_PASSWORD_FILE"
+}
+
+detect_admin_user() {
+    ADMIN_USERNAME="$(sqlite3 "$SOURCE_DB" "select name from user where type = 0 and coalesce(is_admin, 0) = 1 order by id limit 1")"
+    if [ -z "$ADMIN_USERNAME" ]; then
+        printf 'Missing source admin user in %s\n' "$SOURCE_DB" >&2
+        exit 1
+    fi
 }
 
 create_local_config() {
@@ -337,6 +346,8 @@ main() {
         exit 1
     fi
 
+    detect_admin_user
+
     log "Resetting local Forgejo workspace"
     cleanup_container
     rm -rf "$FORGEJO_DIR" "$REPORT_DIR" "$BACKUP_DIR"
@@ -362,7 +373,7 @@ main() {
 
     log "Generating admin token for importer"
     forgejo_bootstrap_run admin user generate-access-token \
-        --username nico \
+        --username "$ADMIN_USERNAME" \
         --token-name minimal-import \
         --scopes all \
         --raw >"$TOKEN_FILE"
@@ -387,6 +398,7 @@ main() {
         --forgejo-root "$FORGEJO_DIR" \
         --base-url "$FORGEJO_BASE_URL" \
         --token-file "$TOKEN_FILE" \
+        --admin-username "$ADMIN_USERNAME" \
         --report-path "$REPORT_FILE" \
         --state-path "$STATE_FILE"
 
