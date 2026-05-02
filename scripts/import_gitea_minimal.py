@@ -32,6 +32,9 @@ class ForgejoAPIError(RuntimeError):
         self.body = body
 
 
+# Shared normalization helpers used across both migration phases.
+
+
 def log(message: str) -> None:
     print(f"[import] {message}")
 
@@ -81,6 +84,8 @@ def path_join(*segments: str) -> str:
 SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 6, 8, 9, 10, 12, 16, 17, 18, 19, 20, 24}
 
 
+# Warnings are persisted between the API and finalize phases so later steps can
+# distinguish expected mirror fallbacks from real migration mismatches.
 @dataclass
 class RepoWarning:
     owner: str
@@ -92,6 +97,7 @@ def repo_warning_key(owner: Any, name: Any) -> tuple[str, str]:
     return (normalize_text(owner).lower(), normalize_text(name).lower())
 
 
+# Thin API wrapper for the online/bootstrap phase.
 class ForgejoAPI:
     def __init__(self, base_url: str, token: str) -> None:
         self.base_url = base_url.rstrip("/")
@@ -145,6 +151,8 @@ class Importer:
         base_url: str | None = None,
         token: str | None = None,
     ) -> None:
+        # Load the source snapshot up front so both phases operate on the same
+        # view of the backup and the finalize phase can work offline.
         self.mode = mode
         self.source_db = source_db
         self.forgejo_db = forgejo_db
@@ -239,6 +247,7 @@ class Importer:
             grouped[row[key]].append(row)
         return grouped
 
+    # Phase entrypoints.
     def run(self) -> None:
         if self.mode == "api":
             self.run_api_phase()
@@ -363,6 +372,7 @@ class Importer:
 
         self.write_state()
 
+    # API-phase helpers.
     def get_team_id(self, org_name: str, team_name: str) -> int:
         assert self.api is not None
         search = self.api.request(
@@ -681,6 +691,9 @@ class Importer:
             target_repo = self.find_target_repo(repo["owner_name"], repo["lower_name"])
             self.copy_repository_data(repo)
             mirror_row = self.source_mirrors.get(repo["id"])
+            # Forgejo rejects credentialed clone URLs during API migration, but
+            # can recover pull-mirror credentials later from the copied repo
+            # config if the mirror row exists in the database.
             fallback_pull_mirror = bool(mirror_row) and any(
                 repo_warning_key(warning.owner, warning.name) == repo_warning_key(repo["owner_name"], repo["name"])
                 for warning in self.warnings
@@ -862,6 +875,7 @@ class Importer:
         self.write_state()
         self.write_report()
 
+    # Finalize-phase lookup and remapping helpers.
     def find_target_user(self, username: str) -> sqlite3.Row:
         assert self.target is not None
         row = self.target.execute(
@@ -936,6 +950,7 @@ class Importer:
                 (table_name, max_id),
             )
 
+    # Finalize-phase filesystem and table import helpers.
     def copy_attachment_files(self) -> None:
         source_attachments_dir = self.backup_root / "data" / "attachments"
         target_attachments_dir = self.forgejo_root / "data" / "attachments"
@@ -1658,6 +1673,7 @@ class Importer:
             )
         )
 
+    # Per-user and per-repository file copy helpers.
     def sync_user_emails(self, source_user: sqlite3.Row, target_user_id: int) -> None:
         assert self.target is not None
         desired_rows = list(self.source_emails.get(source_user["id"], []))
@@ -1717,6 +1733,7 @@ class Importer:
             shutil.rmtree(target_path)
         shutil.copytree(source_path, target_path, symlinks=True)
 
+    # Package compatibility helpers.
     def compute_retained_package_rows(
         self,
     ) -> tuple[list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row]]:
@@ -1965,6 +1982,7 @@ class Importer:
             )
         )
 
+    # Activity replay helpers.
     def import_activity_actions(self) -> None:
         assert self.target is not None
 
@@ -2046,6 +2064,7 @@ class Importer:
         self.imported_activity_count = imported
         self.skipped_activity_count = skipped
 
+    # Cross-phase state and final reporting.
     def load_state(self) -> None:
         if not self.state_path.exists():
             self.warnings = []

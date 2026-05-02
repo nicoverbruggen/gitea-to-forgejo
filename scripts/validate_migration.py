@@ -17,6 +17,8 @@ from typing import Any, Iterable
 SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 6, 8, 9, 10, 12, 16, 17, 18, 19, 20, 24}
 
 
+# Validation failures are accumulated and rendered in a final markdown report
+# instead of failing fast on the first mismatch.
 @dataclass
 class ValidationFailure:
     check: str
@@ -52,6 +54,8 @@ class Validator:
         state_path: Path,
         report_path: Path,
     ) -> None:
+        # Open both databases up front and precompute the source-side package
+        # pruning expectations that Forgejo 15 applies during import.
         self.source_db = source_db
         self.forgejo_db = forgejo_db
         self.backup_root = backup_root
@@ -80,6 +84,7 @@ class Validator:
             self.retained_source_package_properties,
         ) = self.compute_retained_source_package_rows()
 
+    # Shared setup and comparison helpers.
     def load_warning_repo_keys(self) -> set[tuple[str, str]]:
         if not self.state_path.exists():
             return set()
@@ -219,6 +224,7 @@ class Validator:
             detail = (result.stdout + result.stderr).strip() or "git fsck failed without output"
             self.add_failure("git-fsck", f"{repo_path}: {detail}")
 
+    # Validation entrypoint.
     def run(self) -> int:
         self.validate_database()
         self.validate_users()
@@ -238,6 +244,7 @@ class Validator:
         self.write_report()
         return 0 if not self.failures else 1
 
+    # Core validation passes.
     def validate_database(self) -> None:
         integrity = self.target.execute("pragma integrity_check").fetchone()[0]
         journal_mode = normalize_text(self.target.execute("pragma journal_mode").fetchone()[0]).lower()
@@ -311,6 +318,7 @@ class Validator:
         else:
             self.add_note("User passwords are intentionally randomized for testing and are not compared to source hashes")
 
+    # Per-domain validation helpers.
     def user_email_map(
         self,
         connection: sqlite3.Connection,
@@ -1284,6 +1292,7 @@ class Validator:
             f"{len(source_collaboration)} collaborators"
         )
 
+    # Filesystem and Git validation.
     def validate_git_repositories(self) -> None:
         check = "git-repositories"
         source_rows = self.fetch_all(self.source, "select owner_name, lower_name, name from repository order by owner_name, lower_name")
@@ -1413,6 +1422,7 @@ class Validator:
         if source_hash != target_hash:
             self.add_failure(check, f"{label}: SHA-256 mismatch ({source_hash} != {target_hash})")
 
+    # Mirror and package validation.
     def validate_pull_mirrors(self) -> None:
         check = "pull-mirrors"
         source_rows = self.fetch_all(
@@ -1834,6 +1844,7 @@ class Validator:
             return ("package", package_id_map.get(ref_id, ref_id) if source else ref_id)
         return ("other", ref_type, ref_id)
 
+    # Activity replay validation.
     def validate_activity_feed(self) -> None:
         check = "activity-feed"
         source_user_names = {
@@ -1923,6 +1934,7 @@ class Validator:
             f"Validated {len(expected_actions)} activity rows and confirmed {skipped} skipped source rows after dependency remapping"
         )
 
+    # Final report output.
     def write_report(self) -> None:
         status = "PASS" if not self.failures else "FAIL"
         lines = [
