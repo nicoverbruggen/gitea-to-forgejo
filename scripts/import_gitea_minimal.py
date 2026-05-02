@@ -460,6 +460,8 @@ class Importer:
         if self.target is None:
             raise ImportErrorWithContext("Finalize mode requires a target Forgejo database")
 
+        repo_id_map = self.build_repo_id_map()
+
         log("Finalizing user metadata offline")
         for source_user in self.source_users:
             target_user = self.find_target_user(source_user["name"])
@@ -652,6 +654,8 @@ class Importer:
         for repo in self.source_repositories:
             target_repo = self.find_target_repo(repo["owner_name"], repo["lower_name"])
             self.copy_repository_data(repo)
+            target_fork_id = repo_id_map.get(normalize_int(repo["fork_id"]), 0) if repo["fork_id"] else 0
+            target_template_id = repo_id_map.get(normalize_int(repo["template_id"]), 0) if repo["template_id"] else 0
             self.target.execute(
                 """
                 update repository
@@ -711,9 +715,9 @@ class Importer:
                     repo["is_mirror"],
                     repo["status"],
                     repo["is_fork"],
-                    repo["fork_id"],
+                    target_fork_id,
                     repo["is_template"],
-                    repo["template_id"],
+                    target_template_id,
                     repo["size"],
                     repo["git_size"],
                     repo["lfs_size"],
@@ -883,12 +887,6 @@ class Importer:
             shutil.rmtree(target_attachments_dir)
         if source_attachments_dir.exists():
             shutil.copytree(source_attachments_dir, target_attachments_dir, symlinks=True)
-            for root, dirs, files in os.walk(target_attachments_dir):
-                os.chmod(root, 0o777)
-                for dirname in dirs:
-                    os.chmod(Path(root) / dirname, 0o777)
-                for filename in files:
-                    os.chmod(Path(root) / filename, 0o666)
         else:
             target_attachments_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1643,6 +1641,7 @@ class Importer:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if source_path.exists():
             shutil.copy2(source_path, target_path)
+            os.chmod(target_path, 0o644)
 
     def copy_repository_data(self, repo: sqlite3.Row) -> None:
         source_path = self.backup_root / "repos" / repo["owner_name"] / f"{repo['lower_name']}.git"
@@ -1719,12 +1718,6 @@ class Importer:
             shutil.rmtree(target_packages_dir)
         if source_packages_dir.exists():
             shutil.copytree(source_packages_dir, target_packages_dir, symlinks=True)
-            for root, dirs, files in os.walk(target_packages_dir):
-                os.chmod(root, 0o777)
-                for dirname in dirs:
-                    os.chmod(Path(root) / dirname, 0o777)
-                for filename in files:
-                    os.chmod(Path(root) / filename, 0o666)
         else:
             target_packages_dir.mkdir(parents=True, exist_ok=True)
 

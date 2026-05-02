@@ -545,6 +545,23 @@ class Validator:
         }
         self.compare_key_sets(check, set(source_rows), set(target_rows))
 
+        source_repo_by_id = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(self.source, "select id, owner_name, lower_name from repository order by id")
+        }
+        target_repo_by_id = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(
+                self.target,
+                """
+                select repository.id, owner.name as owner_name, repository.lower_name
+                from repository
+                join user owner on owner.id = repository.owner_id
+                order by repository.id
+                """,
+            )
+        }
+
         fields = [
             "name",
             "description",
@@ -565,9 +582,7 @@ class Validator:
             "is_mirror",
             "status",
             "is_fork",
-            "fork_id",
             "is_template",
-            "template_id",
             "object_format_name",
             "trust_model",
             "avatar",
@@ -578,6 +593,19 @@ class Validator:
             label = f"{repo_key[0]}/{source_row['name']}"
             for field in fields:
                 self.compare_values(check, f"{label}.{field}", source_row[field], target_row[field])
+
+            self.compare_values(
+                check,
+                f"{label}.fork",
+                source_repo_by_id.get(normalize_int(source_row["fork_id"]), ("", "")),
+                target_repo_by_id.get(normalize_int(target_row["fork_id"]), ("", "")),
+            )
+            self.compare_values(
+                check,
+                f"{label}.template",
+                source_repo_by_id.get(normalize_int(source_row["template_id"]), ("", "")),
+                target_repo_by_id.get(normalize_int(target_row["template_id"]), ("", "")),
+            )
 
         self.add_note(f"Validated {len(source_rows)} repository metadata rows")
 

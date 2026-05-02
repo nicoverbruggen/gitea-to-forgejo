@@ -22,6 +22,7 @@ FORGEJO_SSH_PORT="${FORGEJO_SSH_PORT:-2222}"
 FORGEJO_BASE_URL="http://localhost:${FORGEJO_HTTP_PORT}"
 PASSWORD_MODE="preserve"
 ADMIN_USERNAME=""
+DETECTED_ADMIN_USERNAME=""
 
 BOOTSTRAP_PASSWORD_FILE="$REPORT_DIR/bootstrap-passwords.txt"
 PASSWORD_FILE="$REPORT_DIR/temporary-passwords.txt"
@@ -82,6 +83,11 @@ forgejo_dump_run() {
         forgejo --config /var/lib/gitea/custom/conf/app.ini dump "$@"
 }
 
+remove_import_token() {
+    sqlite3 "$FORGEJO_DB" \
+        "delete from access_token where uid = (select id from user where lower_name = lower('$DETECTED_ADMIN_USERNAME')) and name = 'minimal-import'"
+}
+
 cleanup_container() {
     podman rm -f "$FORGEJO_CONTAINER_NAME" >/dev/null 2>&1 || true
 }
@@ -105,12 +111,17 @@ append_doctor_report() {
     local doctor_output
     local doctor_status=0
 
-    if ! doctor_output="$(forgejo_run doctor check --all 2>&1)"; then
-        doctor_status=$?
-    fi
+    doctor_output="$(forgejo_run doctor check --all 2>&1)" || doctor_status=$?
 
     {
         printf '\n## Forgejo Doctor\n\n'
+        if [ "$doctor_status" -eq 0 ]; then
+            printf 'Status: **PASS**\n\n'
+        else
+            printf 'Status: **ADVISORY FAILURE**\n\n'
+            printf '> [!WARNING]\n'
+            printf '> `forgejo doctor check --all` reported problems, but the migration continued because doctor failures are advisory in this workflow.\n\n'
+        fi
         printf 'Exit status: `%s`\n\n' "$doctor_status"
         printf '```text\n%s\n```\n' "$doctor_output"
     } >>"$REPORT_FILE"
@@ -151,11 +162,12 @@ password_for_user() {
 }
 
 detect_admin_user() {
-    ADMIN_USERNAME="$(sqlite3 "$SOURCE_DB" "select name from user where type = 0 and coalesce(is_admin, 0) = 1 order by id limit 1")"
-    if [ -z "$ADMIN_USERNAME" ]; then
+    DETECTED_ADMIN_USERNAME="$(sqlite3 "$SOURCE_DB" "select name from user where type = 0 and coalesce(is_admin, 0) = 1 order by id limit 1")"
+    if [ -z "$DETECTED_ADMIN_USERNAME" ]; then
         printf 'Missing source admin user in %s\n' "$SOURCE_DB" >&2
         exit 1
     fi
+    ADMIN_USERNAME="$DETECTED_ADMIN_USERNAME"
 }
 
 create_local_config() {
@@ -405,6 +417,9 @@ main() {
     log "Stopping Forgejo so hooks, keys, and doctor checks run against settled data"
     podman stop "$FORGEJO_CONTAINER_NAME" >/dev/null
 
+    log "Removing temporary importer access token"
+    remove_import_token
+
     log "Finalizing offline database and repository metadata"
     python3 "$IMPORTER" \
         --mode finalize \
@@ -412,13 +427,15 @@ main() {
         --forgejo-db "$FORGEJO_DB" \
         --backup-root "$SOURCE_DIR" \
         --forgejo-root "$FORGEJO_DIR" \
+        --admin-username "$DETECTED_ADMIN_USERNAME" \
         --password-mode "$PASSWORD_MODE" \
         --report-path "$REPORT_FILE" \
         --state-path "$STATE_FILE"
 
     log "Normalizing writable permissions for the disposable local Forgejo data tree"
     mkdir -p "$FORGEJO_DIR/log"
-    chmod -R u+rwX,go+rwX "$FORGEJO_DIR"
+    chmod -R u+rwX,go+rwX "$FORGEJO_DIR/data/forgejo-repositories"
+    chmod u+rwX,go+rwX "$FORGEJO_DIR/log"
 
     log "Clearing copied legacy hook files so Forgejo can regenerate its own hook layout"
     find "$FORGEJO_DIR/data/forgejo-repositories" -type f -path '*/hooks/*' -delete
