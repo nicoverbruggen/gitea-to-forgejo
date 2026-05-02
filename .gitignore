@@ -1,5 +1,6 @@
 backup
 server-setup
 forgejo
+forgejo-src
 report
 __pycache__/

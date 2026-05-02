@@ -83,6 +83,11 @@ Mirror credential caveats:
 
 ## Updating the configuration file
 
+By default, both mails and mirroring are disabled after the migration. This is done so you can verify the data locally, but no stale data will be pulled in, mirrored or emails sent about your local Forgejo instance running on `localhost:3000`.
+
+- Re-enable pull and push mirroring
+- Uncomment mailer configuration
+
 Once the data has been migrated, you need to manually validate the configuration file, and to re-enable pull and push mirroring, change:
 
 ```ini
@@ -98,6 +103,8 @@ PUSH_LIMIT = <non-zero value>
 These local safety settings are written into `./forgejo/custom/conf/app.ini` so the verification instance never syncs outward or refreshes mirrors in the background while you inspect the migrated data.
 
 If you don't want to customize the defaults, removing these safeguards for the local installation when deploying to your production instance is probably sufficient.
+
+You also need to uncomment the mailer configuration, as it is automatically commented out.
 
 ## Report
 
