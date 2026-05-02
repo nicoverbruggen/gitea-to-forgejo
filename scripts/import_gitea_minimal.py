@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -85,6 +86,10 @@ class RepoWarning:
     owner: str
     name: str
     reason: str
+
+
+def repo_warning_key(owner: Any, name: Any) -> tuple[str, str]:
+    return (normalize_text(owner).lower(), normalize_text(name).lower())
 
 
 class ForgejoAPI:
@@ -406,11 +411,12 @@ class Importer:
 
     def try_create_pull_mirror(self, repo: sqlite3.Row, mirror_row: sqlite3.Row) -> bool:
         assert self.api is not None
+        clone_addr = self.source_repo_origin_url(repo) or mirror_row["remote_address"]
         payload = {
             "service": "git",
             "repo_name": repo["name"],
             "repo_owner": repo["owner_name"],
-            "clone_addr": mirror_row["remote_address"],
+            "clone_addr": clone_addr,
             "description": nullable_text(repo["description"]),
             "private": bool_value(repo["is_private"]),
             "mirror": True,
@@ -445,6 +451,26 @@ class Importer:
                 )
             )
             return False
+
+    def discard_warning(self, owner: str, name: str) -> None:
+        warning_key = repo_warning_key(owner, name)
+        self.warnings = [
+            warning for warning in self.warnings if repo_warning_key(warning.owner, warning.name) != warning_key
+        ]
+
+    def source_repo_origin_url(self, repo: sqlite3.Row) -> str:
+        source_path = self.backup_root / "repos" / repo["owner_name"] / f"{repo['lower_name']}.git"
+        if not source_path.exists():
+            return ""
+
+        try:
+            return subprocess.check_output(
+                ["git", "--git-dir", str(source_path), "config", "--get", "remote.origin.url"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except subprocess.CalledProcessError:
+            return ""
 
     def repo_exists(self, owner: str, repo_name: str) -> bool:
         assert self.api is not None
@@ -654,6 +680,11 @@ class Importer:
         for repo in self.source_repositories:
             target_repo = self.find_target_repo(repo["owner_name"], repo["lower_name"])
             self.copy_repository_data(repo)
+            mirror_row = self.source_mirrors.get(repo["id"])
+            fallback_pull_mirror = bool(mirror_row) and any(
+                repo_warning_key(warning.owner, warning.name) == repo_warning_key(repo["owner_name"], repo["name"])
+                for warning in self.warnings
+            )
             target_fork_id = repo_id_map.get(normalize_int(repo["fork_id"]), 0) if repo["fork_id"] else 0
             target_template_id = repo_id_map.get(normalize_int(repo["template_id"]), 0) if repo["template_id"] else 0
             self.target.execute(
@@ -712,7 +743,7 @@ class Importer:
                     repo["is_private"],
                     repo["is_empty"],
                     repo["is_archived"],
-                    repo["is_mirror"],
+                    1 if fallback_pull_mirror else repo["is_mirror"],
                     repo["status"],
                     repo["is_fork"],
                     target_fork_id,
@@ -734,7 +765,6 @@ class Importer:
                 ),
             )
 
-            mirror_row = self.source_mirrors.get(repo["id"])
             target_mirror = self.target.execute(
                 "select repo_id from mirror where repo_id = ?",
                 (target_repo["id"],),
@@ -761,6 +791,31 @@ class Importer:
                         target_repo["id"],
                     ),
                 )
+            elif mirror_row is not None and fallback_pull_mirror:
+                self.target.execute(
+                    """
+                    insert into mirror (
+                        repo_id,
+                        interval,
+                        enable_prune,
+                        updated_unix,
+                        next_update_unix,
+                        lfs_enabled,
+                        lfs_endpoint,
+                        encrypted_remote_address
+                    ) values (?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        target_repo["id"],
+                        mirror_row["interval"],
+                        mirror_row["enable_prune"],
+                        mirror_row["updated_unix"],
+                        mirror_row["next_update_unix"],
+                        mirror_row["lfs_enabled"],
+                        mirror_row["lfs_endpoint"],
+                    ),
+                )
+                self.discard_warning(repo["owner_name"], repo["name"])
 
             self.sync_avatar_file("repo-avatars", repo["avatar"], bool(repo["avatar"]))
             self.target.execute("delete from push_mirror where repo_id = ?", (target_repo["id"],))
@@ -804,6 +859,7 @@ class Importer:
 
         self.target.execute("PRAGMA journal_mode=DELETE")
         self.target.commit()
+        self.write_state()
         self.write_report()
 
     def find_target_user(self, username: str) -> sqlite3.Row:
