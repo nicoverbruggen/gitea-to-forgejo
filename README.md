@@ -6,16 +6,21 @@ This script aims to transfer your existing data from **Gitea 1.26 to Forgejo 15.
 
 ## What you need
 
-- A backup of your Gitea installation in `./backup/gitea`.
-- The following dependencies installed: TODO, TODO
+- An (unzipped) backup of your Gitea installation in `./backup/gitea`.
+- The following dependencies installed locally: `podman`, `sqlite3`, `curl`, `python3`, and `git`.
 
 ## What is not migrated
+
+- Gitea Actions runtime state, logs, schedules, artifacts, runner registrations, and related tokens.
+- OCI package blobs and manifest rows that Forgejo 15 prunes as dangling data during import.
+- Source branding and static overrides from `custom/public/*`, such as logos, favicons, and `robots.txt`.
+- Two-factor authentication state, WebAuthn credentials, and per-user theme selections.
 
 ## What you will get
 
 - A migration report in `./report`.
 - A local instance of Forgejo running at `localhost:3000` with its data in `./forgejo`.
-- A Forgejo backup in `./backup/forgejo` that you can restore.
+- A Forgejo `.zip` backup in `./backup/forgejo` that you can restore.
 
 ## What you still need to do
 
@@ -34,11 +39,13 @@ Run:
 This will:
 
 - rebuild `./forgejo`
+- rebuild `./backup/forgejo`
 - start a local Forgejo 15.0 instance with Podman
 - import users, organizations, teams, repositories, pull mirrors, push mirror rows, issues, comments, releases, stars, watches, collaborators, and attachments from `./backup/gitea`
 - import the container package registry data that Forgejo 15 can retain
 - replay the source activity feed rows that Forgejo 15 still understands
 - validate the migrated data against the backup and fail if mismatches are found
+- export a Forgejo backup archive to `./backup/forgejo/forgejo-dump.zip`
 - leave Forgejo running on `http://localhost:3000` so you can validate the installation
 
 ## Password behavior
@@ -57,14 +64,33 @@ If you'd like to generate random passwords which you can send to users:
 
 - Pull mirrors are imported as real pull mirrors when Forgejo can create them.
 - Push mirror rows are imported too.
+- Push mirror remote configuration is preserved because the source bare repositories are copied as-is, including any `remote "remote_mirror_*"` entries in their Git config.
+- URL-based push mirror credentials that are stored in those copied Git remotes therefore carry over too.
 - Scheduled pull and push mirror updates are both disabled locally, so this verification instance does not sync outward or refresh from remotes in the background.
+
+Mirror credential caveats:
+
+- Pull mirror credentials are only preserved when Forgejo can create the pull mirror from the source remote address successfully.
+- Push mirror authentication only carries over when the required remote URL or credentials are present in the backup itself.
+- Secrets that lived outside the Gitea backup, such as host-level SSH keys, agent state, or external credential helpers, are not migrated.
 
 ### Updating the configuration file
 
 Once the data has been migrated, you need to manually validate the configuration file, and to re-enable pull and push mirroring, change:
 
-```TODO
+```ini
+[mirror]
+DISABLE_NEW_PULL = false
+DISABLE_NEW_PUSH = false
+
+[cron.update_mirrors]
+PULL_LIMIT = <non-zero value>
+PUSH_LIMIT = <non-zero value>
 ```
+
+These local safety settings are written into `./forgejo/custom/conf/app.ini` so the verification instance never syncs outward or refreshes mirrors in the background while you inspect the migrated data.
+
+If you don't want to customize the defaults, removing these safeguards for the local installation when deploying to your production instance is probably sufficient.
 
 ## Report
 
@@ -72,6 +98,7 @@ Generated outputs:
 
 - `./report/migration-report.md`
 - `./report/validation-report.md`
+- `./backup/forgejo/forgejo-dump.zip`
 
 Generated only when using `--randomize-passwords`:
 

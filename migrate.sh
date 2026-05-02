@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$ROOT_DIR/backup/gitea"
+BACKUP_DIR="$ROOT_DIR/backup/forgejo"
 SOURCE_DB="$SOURCE_DIR/data/gitea.db"
 SOURCE_APP_INI="$SOURCE_DIR/app.ini"
 
@@ -52,6 +53,12 @@ runtime_mount() {
     printf '%s:/var/lib/gitea' "$FORGEJO_DIR"
 }
 
+backup_mount() {
+    # The rootless image also needs ownership remapping to write the exported
+    # dump archive back into the host backup directory.
+    printf '%s:/backup:U' "$BACKUP_DIR"
+}
+
 forgejo_bootstrap_run() {
     podman run --rm \
         -v "$(bootstrap_mount)" \
@@ -64,6 +71,14 @@ forgejo_run() {
         -v "$(runtime_mount)" \
         "$FORGEJO_IMAGE" \
         forgejo --config /var/lib/gitea/custom/conf/app.ini "$@"
+}
+
+forgejo_dump_run() {
+    podman run --rm \
+        -v "$(runtime_mount)" \
+        -v "$(backup_mount)" \
+        "$FORGEJO_IMAGE" \
+        forgejo --config /var/lib/gitea/custom/conf/app.ini dump "$@"
 }
 
 cleanup_container() {
@@ -324,9 +339,9 @@ main() {
 
     log "Resetting local Forgejo workspace"
     cleanup_container
-    rm -rf "$FORGEJO_DIR" "$REPORT_DIR"
+    rm -rf "$FORGEJO_DIR" "$REPORT_DIR" "$BACKUP_DIR"
     mkdir -p "$FORGEJO_CUSTOM_DIR/conf" "$FORGEJO_CUSTOM_DIR/templates" "$FORGEJO_DATA_DIR/home" "$FORGEJO_DIR/git"
-    mkdir -p "$REPORT_DIR"
+    mkdir -p "$REPORT_DIR" "$BACKUP_DIR"
 
     if [ -f "$SOURCE_DIR/custom/templates/home.tmpl" ]; then
         cp "$SOURCE_DIR/custom/templates/home.tmpl" "$FORGEJO_CUSTOM_DIR/templates/home.tmpl"
@@ -417,6 +432,12 @@ main() {
 
     rm -f "$BOOTSTRAP_PASSWORD_FILE"
 
+    log "Exporting Forgejo backup"
+    forgejo_dump_run \
+        --file /backup/forgejo-dump.zip \
+        --type zip \
+        --tempdir /tmp
+
     log "Restarting Forgejo for local verification"
     podman start "$FORGEJO_CONTAINER_NAME" >/dev/null
     wait_for_forgejo
@@ -433,6 +454,7 @@ main() {
     fi
     printf 'Migration report: %s\n' "$REPORT_FILE"
     printf 'Validation report: %s\n' "$VALIDATION_REPORT"
+    printf 'Forgejo backup: %s/forgejo-dump.zip\n' "$BACKUP_DIR"
 }
 
 main "$@"
