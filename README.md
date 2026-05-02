@@ -2,54 +2,33 @@
 
 A few years ago, it was a breeze to migrate from Gitea to Forgejo. Unfortunately, things aren't as simple today.
 
-Your goal is to produce a script that I can easily migrate all of the data from my Gitea backup to Forgejo.
+This script aims to transfer your existing data from **Gitea 1.26 to Forgejo 15.0**.
 
-You can find the backup in `./backup/gitea`. This is a complete backup. Some of these files are rather big, so keep that in mind.
+## What you need
 
-You can also learn more about how this is set up via: `./server-setup`
+- A backup of your Gitea installation in `./backup/gitea`.
+- The following dependencies installed: TODO, TODO
 
-To accomplish this, I would like to migrate as much as possible to Forgejo, as seamlessly as possible, without needing to do this manually. 
+## What is not migrated
 
-Ideally, for a minimal use case, the following should be migrated:
+## What you will get
 
-- Organizations
-- Users
-- All repositories (with avatar, description)
+- A migration report in `./report`.
+- A local instance of Forgejo running at `localhost:3000` with its data in `./forgejo`.
+- A Forgejo backup in `./backup/forgejo` that you can restore.
 
-Not to be migrated:
+## What you still need to do
 
-- Actions history (incompatible)
-- Runner configuration (I will need to set this up again)
+- Validate login credentials approach (see more below)
+- Copy and test any customizations in `./custom`.
+- Enable push and pull in configuration (see more below)
 
-The goal of the script is to make it easy to test if things have been properly migrated, so use the latest Docker image to spin up an image locally. 
-
-You can find it here: https://codeberg.org/forgejo/-/packages/container/forgejo
-
-(Note: On this Mac, I have access to Podman, so use that.)
-
-The goal: I can run a script called: `migrate.sh`, which will:
-
-- Spin up a new Forgejo instance with Podman (and remove the running one, if one exists)
-- Set up/migrate data via the ./forgejo directory, which is used for the Podman Forgejo instance.
-- Write generated migration artifacts to `./report`.
-- Make this instance available so I can browse locally to it and see if everything looks OK
-
-(How the runners are set up will be migrated later.)
-
---> You can find the actual plan to execute at: `PLAN.md`
-
-## Current workflow
+## How to use
 
 Run:
 
 ```bash
 ./migrate.sh
-```
-
-Or for disposable test credentials instead of the original user passwords:
-
-```bash
-./migrate.sh --randomize-passwords
 ```
 
 This will:
@@ -60,24 +39,34 @@ This will:
 - import the container package registry data that Forgejo 15 can retain
 - replay the source activity feed rows that Forgejo 15 still understands
 - validate the migrated data against the backup and fail if mismatches are found
-- leave Forgejo running on `http://localhost:3000`
+- leave Forgejo running on `http://localhost:3000` so you can validate the installation
 
-Password behavior:
+## Password behavior
 
-- By default, the migration preserves the original Gitea password hashes, salts, and password algorithm metadata, so imported users keep their existing passwords.
-- `./migrate.sh --randomize-passwords` keeps the old testing behavior and generates temporary passwords instead.
+By default, the migration preserves the original Gitea password hashes, salts, and password algorithm metadata, so imported users keep their existing passwords.
 
-Mirror behavior on the local test instance:
+Two-factor authentication and WebAuth tokens are **not** transferred, so this approach is *a potential security risk*, which you should keep in mind.
+
+If you'd like to generate random passwords which you can send to users:
+
+```bash
+./migrate.sh --randomize-passwords
+```
+
+### Mirror behavior
 
 - Pull mirrors are imported as real pull mirrors when Forgejo can create them.
 - Push mirror rows are imported too.
 - Scheduled pull and push mirror updates are both disabled locally, so this verification instance does not sync outward or refresh from remotes in the background.
 
-Branding and theme behavior:
+### Updating the configuration file
 
-- Source Gitea `custom/` styling and asset overrides are not copied into the local Forgejo instance.
-- The only preserved source customization is `custom/templates/home.tmpl`.
-- User theme preferences are not replayed, so the local verification instance uses the default Forgejo theme.
+Once the data has been migrated, you need to manually validate the configuration file, and to re-enable pull and push mirroring, change:
+
+```TODO
+```
+
+## Report
 
 Generated outputs:
 
@@ -125,20 +114,3 @@ The current transition also does not preserve a few Gitea-only fields that do no
 - `comment.comment_meta_data`
 - `label.exclusive_order`
 - user theme selections from the source instance
-
-## Gitea 1.26 to Forgejo 15.0
-
-This repository currently targets migration from:
-
-- Gitea `1.26.x` backup data
-- into Forgejo `15.0.x`
-
-## Nice to have
-
-- Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo in the future)
-
-## Theming
-
-- How has Codeberg modified their styling for Forgejo?
-- Can we create something similar?
-- Potentially, apply some CSS fixes to the custom theme to improve the look & feel of the Forgejo client; should be inspired by Codeberg's modifications (can we find that online somewhere?)
