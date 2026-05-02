@@ -62,7 +62,13 @@ Generated outputs:
 
 ## Todo
 
+- Based on the migration script, tell me what differences exist in how the data is stored between Gitea -> Forgejo. Is any meaningful data omitted?
+- Since it should be possible, migrate other data (issues, issue comments, pull requests, pull request comments, stars, releases, release attachments)
+- Determine if actions data can be migrated
+
+## Nice to have
+
 - Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo)
-- Use Forgejo customizations instead (it's one of the repos)
-- Migrate issues etc.
+- Document we are migrating from Gitea 1.26 to Forgejo 15.0
+- Use Forgejo customizations instead (it's one of the repos: `backup/gitea/repos/nico/forgejo-customize.git`)
 - Potentially, apply some CSS fixes to the custom theme to improve the look & feel of the Forgejo client; should be inspired by Codeberg's modifications (can we find that online somewhere?)
