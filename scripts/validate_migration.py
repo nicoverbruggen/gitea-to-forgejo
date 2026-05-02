@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 8, 9, 16, 17, 18, 19, 20}
+SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 6, 8, 9, 10, 12, 16, 17, 18, 19, 20, 24}
 
 
 @dataclass
@@ -224,6 +224,7 @@ class Validator:
         self.validate_org_memberships()
         self.validate_teams()
         self.validate_repositories()
+        self.validate_project_and_social_data()
         self.validate_git_repositories()
         self.validate_ssh_keys()
         self.validate_avatars()
@@ -540,9 +541,17 @@ class Validator:
             "original_service_type",
             "original_url",
             "default_branch",
+            "num_watches",
+            "num_stars",
+            "num_forks",
+            "num_milestones",
+            "num_closed_milestones",
+            "num_projects",
+            "num_closed_projects",
             "is_private",
             "is_empty",
             "is_archived",
+            "is_mirror",
             "status",
             "is_fork",
             "fork_id",
@@ -560,6 +569,560 @@ class Validator:
                 self.compare_values(check, f"{label}.{field}", source_row[field], target_row[field])
 
         self.add_note(f"Validated {len(source_rows)} repository metadata rows")
+
+    def validate_project_and_social_data(self) -> None:
+        check = "project-social"
+
+        source_user_names = {
+            row["id"]: row["name"]
+            for row in self.fetch_all(self.source, "select id, name from user order by id")
+        }
+        target_user_names = {
+            row["id"]: row["name"]
+            for row in self.fetch_all(self.target, "select id, name from user order by id")
+        }
+        source_repo_keys = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(self.source, "select id, owner_name, lower_name from repository order by id")
+        }
+        target_repo_keys = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(
+                self.target,
+                """
+                select repository.id, owner.name as owner_name, repository.lower_name
+                from repository
+                join user owner on owner.id = repository.owner_id
+                order by repository.id
+                """,
+            )
+        }
+
+        def compare_entity(entity: str, source_rows: dict[int, tuple[Any, ...]], target_rows: dict[int, tuple[Any, ...]]) -> None:
+            entity_check = f"{check}:{entity}"
+            self.compare_key_sets(entity_check, set(source_rows), set(target_rows))
+            for row_id in sorted(set(source_rows) & set(target_rows)):
+                if source_rows[row_id] != target_rows[row_id]:
+                    self.add_failure(
+                        entity_check,
+                        f"{entity} {row_id} mismatch: expected {source_rows[row_id]!r}, found {target_rows[row_id]!r}",
+                    )
+
+        source_labels = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                source_user_names.get(normalize_int(row["org_id"]), ""),
+                normalize_text(row["name"]),
+                normalize_int(row["exclusive"]),
+                normalize_text(row["description"]),
+                normalize_text(row["color"]),
+                normalize_int(row["num_issues"]),
+                normalize_int(row["num_closed_issues"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["archived_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from label order by id")
+        }
+        target_labels = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                target_user_names.get(normalize_int(row["org_id"]), ""),
+                normalize_text(row["name"]),
+                normalize_int(row["exclusive"]),
+                normalize_text(row["description"]),
+                normalize_text(row["color"]),
+                normalize_int(row["num_issues"]),
+                normalize_int(row["num_closed_issues"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["archived_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from label order by id")
+        }
+        compare_entity("labels", source_labels, target_labels)
+
+        source_milestones = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_text(row["name"]),
+                normalize_text(row["content"]),
+                normalize_int(row["is_closed"]),
+                normalize_int(row["num_issues"]),
+                normalize_int(row["num_closed_issues"]),
+                normalize_int(row["completeness"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["deadline_unix"]),
+                normalize_int(row["closed_date_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from milestone order by id")
+        }
+        target_milestones = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_text(row["name"]),
+                normalize_text(row["content"]),
+                normalize_int(row["is_closed"]),
+                normalize_int(row["num_issues"]),
+                normalize_int(row["num_closed_issues"]),
+                normalize_int(row["completeness"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["deadline_unix"]),
+                normalize_int(row["closed_date_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from milestone order by id")
+        }
+        compare_entity("milestones", source_milestones, target_milestones)
+
+        source_issues = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["index"]),
+                source_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_text(row["original_author"]),
+                source_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["name"]),
+                normalize_text(row["content"]),
+                normalize_int(row["content_version"]),
+                normalize_int(row["milestone_id"]),
+                normalize_int(row["priority"]),
+                normalize_int(row["is_closed"]),
+                normalize_int(row["is_pull"]),
+                normalize_int(row["num_comments"]),
+                normalize_text(row["ref"]),
+                normalize_int(row["deadline_unix"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["closed_unix"]),
+                normalize_int(row["is_locked"]),
+            )
+            for row in self.fetch_all(self.source, "select * from issue order by id")
+        }
+        target_issues = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["index"]),
+                target_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_text(row["original_author"]),
+                target_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["name"]),
+                normalize_text(row["content"]),
+                normalize_int(row["content_version"]),
+                normalize_int(row["milestone_id"]),
+                normalize_int(row["priority"]),
+                normalize_int(row["is_closed"]),
+                normalize_int(row["is_pull"]),
+                normalize_int(row["num_comments"]),
+                normalize_text(row["ref"]),
+                normalize_int(row["deadline_unix"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_int(row["closed_unix"]),
+                normalize_int(row["is_locked"]),
+            )
+            for row in self.fetch_all(self.target, "select * from issue order by id")
+        }
+        compare_entity("issues", source_issues, target_issues)
+
+        source_issue_labels = {
+            row["id"]: (normalize_int(row["issue_id"]), normalize_int(row["label_id"]))
+            for row in self.fetch_all(self.source, "select * from issue_label order by id")
+        }
+        target_issue_labels = {
+            row["id"]: (normalize_int(row["issue_id"]), normalize_int(row["label_id"]))
+            for row in self.fetch_all(self.target, "select * from issue_label order by id")
+        }
+        compare_entity("issue-labels", source_issue_labels, target_issue_labels)
+
+        source_issue_assignees = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["assignee_id"]), ""),
+                normalize_int(row["issue_id"]),
+            )
+            for row in self.fetch_all(self.source, "select * from issue_assignees order by id")
+        }
+        target_issue_assignees = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["assignee_id"]), ""),
+                normalize_int(row["issue_id"]),
+            )
+            for row in self.fetch_all(self.target, "select * from issue_assignees order by id")
+        }
+        compare_entity("issue-assignees", source_issue_assignees, target_issue_assignees)
+
+        source_issue_users = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["uid"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["is_read"]),
+                normalize_int(row["is_mentioned"]),
+            )
+            for row in self.fetch_all(self.source, "select * from issue_user order by id")
+        }
+        target_issue_users = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["uid"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["is_read"]),
+                normalize_int(row["is_mentioned"]),
+            )
+            for row in self.fetch_all(self.target, "select * from issue_user order by id")
+        }
+        compare_entity("issue-users", source_issue_users, target_issue_users)
+
+        source_comments = {
+            row["id"]: (
+                normalize_int(row["type"]),
+                source_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_text(row["original_author"]),
+                source_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["label_id"]),
+                normalize_int(row["old_project_id"]),
+                normalize_int(row["project_id"]),
+                normalize_int(row["old_milestone_id"]),
+                normalize_int(row["milestone_id"]),
+                normalize_int(row["time_id"]),
+                source_user_names.get(normalize_int(row["assignee_id"]), ""),
+                normalize_int(row["removed_assignee"]),
+                normalize_int(row["assignee_team_id"]),
+                source_user_names.get(normalize_int(row["resolve_doer_id"]), ""),
+                normalize_text(row["old_title"]),
+                normalize_text(row["new_title"]),
+                normalize_text(row["old_ref"]),
+                normalize_text(row["new_ref"]),
+                normalize_int(row["dependent_issue_id"]),
+                normalize_int(row["commit_id"]),
+                normalize_int(row["line"]),
+                normalize_text(row["tree_path"]),
+                normalize_text(row["content"]),
+                normalize_text(row["patch"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_text(row["commit_sha"]),
+                normalize_int(row["review_id"]),
+                normalize_int(row["invalidated"]),
+                source_repo_keys.get(normalize_int(row["ref_repo_id"]), ("", "")),
+                normalize_int(row["ref_issue_id"]),
+                normalize_int(row["ref_comment_id"]),
+                normalize_int(row["ref_action"]),
+                normalize_int(row["ref_is_pull"]),
+                normalize_int(row["content_version"]),
+            )
+            for row in self.fetch_all(self.source, "select * from comment order by id")
+        }
+        target_comments = {
+            row["id"]: (
+                normalize_int(row["type"]),
+                target_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_text(row["original_author"]),
+                target_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["label_id"]),
+                normalize_int(row["old_project_id"]),
+                normalize_int(row["project_id"]),
+                normalize_int(row["old_milestone_id"]),
+                normalize_int(row["milestone_id"]),
+                normalize_int(row["time_id"]),
+                target_user_names.get(normalize_int(row["assignee_id"]), ""),
+                normalize_int(row["removed_assignee"]),
+                normalize_int(row["assignee_team_id"]),
+                target_user_names.get(normalize_int(row["resolve_doer_id"]), ""),
+                normalize_text(row["old_title"]),
+                normalize_text(row["new_title"]),
+                normalize_text(row["old_ref"]),
+                normalize_text(row["new_ref"]),
+                normalize_int(row["dependent_issue_id"]),
+                normalize_int(row["commit_id"]),
+                normalize_int(row["line"]),
+                normalize_text(row["tree_path"]),
+                normalize_text(row["content"]),
+                normalize_text(row["patch"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+                normalize_text(row["commit_sha"]),
+                normalize_int(row["review_id"]),
+                normalize_int(row["invalidated"]),
+                target_repo_keys.get(normalize_int(row["ref_repo_id"]), ("", "")),
+                normalize_int(row["ref_issue_id"]),
+                normalize_int(row["ref_comment_id"]),
+                normalize_int(row["ref_action"]),
+                normalize_int(row["ref_is_pull"]),
+                normalize_int(row["content_version"]),
+            )
+            for row in self.fetch_all(self.target, "select * from comment order by id")
+        }
+        compare_entity("comments", source_comments, target_comments)
+
+        source_pull_requests = {
+            row["id"]: (
+                normalize_int(row["type"]),
+                normalize_int(row["status"]),
+                normalize_text(row["conflicted_files"]),
+                normalize_int(row["commits_ahead"]),
+                normalize_int(row["commits_behind"]),
+                normalize_text(row["changed_protected_files"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["index"]),
+                source_repo_keys.get(normalize_int(row["head_repo_id"]), ("", "")),
+                source_repo_keys.get(normalize_int(row["base_repo_id"]), ("", "")),
+                normalize_text(row["head_branch"]),
+                normalize_text(row["base_branch"]),
+                normalize_text(row["merge_base"]),
+                normalize_int(row["allow_maintainer_edit"]),
+                normalize_int(row["has_merged"]),
+                normalize_text(row["merged_commit_id"]),
+                source_user_names.get(normalize_int(row["merger_id"]), ""),
+                normalize_int(row["merged_unix"]),
+                normalize_int(row["flow"]),
+            )
+            for row in self.fetch_all(self.source, "select * from pull_request order by id")
+        }
+        target_pull_requests = {
+            row["id"]: (
+                normalize_int(row["type"]),
+                normalize_int(row["status"]),
+                normalize_text(row["conflicted_files"]),
+                normalize_int(row["commits_ahead"]),
+                normalize_int(row["commits_behind"]),
+                normalize_text(row["changed_protected_files"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["index"]),
+                target_repo_keys.get(normalize_int(row["head_repo_id"]), ("", "")),
+                target_repo_keys.get(normalize_int(row["base_repo_id"]), ("", "")),
+                normalize_text(row["head_branch"]),
+                normalize_text(row["base_branch"]),
+                normalize_text(row["merge_base"]),
+                normalize_int(row["allow_maintainer_edit"]),
+                normalize_int(row["has_merged"]),
+                normalize_text(row["merged_commit_id"]),
+                target_user_names.get(normalize_int(row["merger_id"]), ""),
+                normalize_int(row["merged_unix"]),
+                normalize_int(row["flow"]),
+            )
+            for row in self.fetch_all(self.target, "select * from pull_request order by id")
+        }
+        compare_entity("pull-requests", source_pull_requests, target_pull_requests)
+
+        source_issue_history = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_int(row["edited_unix"]),
+                normalize_text(row["content_text"]),
+                normalize_int(row["is_first_created"]),
+                normalize_int(row["is_deleted"]),
+            )
+            for row in self.fetch_all(self.source, "select * from issue_content_history order by id")
+        }
+        target_issue_history = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["poster_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_int(row["edited_unix"]),
+                normalize_text(row["content_text"]),
+                normalize_int(row["is_first_created"]),
+                normalize_int(row["is_deleted"]),
+            )
+            for row in self.fetch_all(self.target, "select * from issue_content_history order by id")
+        }
+        compare_entity("issue-history", source_issue_history, target_issue_history)
+
+        source_reactions = {
+            row["id"]: (
+                normalize_text(row["type"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                source_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["original_author"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from reaction order by id")
+        }
+        target_reactions = {
+            row["id"]: (
+                normalize_text(row["type"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                target_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["original_author"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from reaction order by id")
+        }
+        compare_entity("reactions", source_reactions, target_reactions)
+
+        source_releases = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                source_user_names.get(normalize_int(row["publisher_id"]), ""),
+                normalize_text(row["tag_name"]),
+                normalize_text(row["original_author"]),
+                source_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["lower_tag_name"]),
+                normalize_text(row["target"]),
+                normalize_text(row["title"]),
+                normalize_text(row["sha1"]),
+                normalize_int(row["num_commits"]),
+                normalize_text(row["note"]),
+                normalize_int(row["is_draft"]),
+                normalize_int(row["is_prerelease"]),
+                normalize_int(row["is_tag"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from release order by id")
+        }
+        target_releases = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                target_user_names.get(normalize_int(row["publisher_id"]), ""),
+                normalize_text(row["tag_name"]),
+                normalize_text(row["original_author"]),
+                target_user_names.get(normalize_int(row["original_author_id"]), ""),
+                normalize_text(row["lower_tag_name"]),
+                normalize_text(row["target"]),
+                normalize_text(row["title"]),
+                normalize_text(row["sha1"]),
+                normalize_int(row["num_commits"]),
+                normalize_text(row["note"]),
+                normalize_int(row["is_draft"]),
+                normalize_int(row["is_prerelease"]),
+                normalize_int(row["is_tag"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from release order by id")
+        }
+        compare_entity("releases", source_releases, target_releases)
+
+        source_uploads = {
+            row["id"]: (normalize_text(row["uuid"]), normalize_text(row["name"]))
+            for row in self.fetch_all(self.source, "select * from upload order by id")
+        }
+        target_uploads = {
+            row["id"]: (normalize_text(row["uuid"]), normalize_text(row["name"]))
+            for row in self.fetch_all(self.target, "select * from upload order by id")
+        }
+        compare_entity("uploads", source_uploads, target_uploads)
+
+        source_attachments = {
+            row["id"]: (
+                normalize_text(row["uuid"]),
+                source_user_names.get(normalize_int(row["uploader_id"]), ""),
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["release_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_text(row["name"]),
+                normalize_int(row["download_count"]),
+                normalize_int(row["size"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from attachment order by id")
+        }
+        target_attachments = {
+            row["id"]: (
+                normalize_text(row["uuid"]),
+                target_user_names.get(normalize_int(row["uploader_id"]), ""),
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["release_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_text(row["name"]),
+                normalize_int(row["download_count"]),
+                normalize_int(row["size"]),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from attachment order by id")
+        }
+        compare_entity("attachments", source_attachments, target_attachments)
+
+        for row in self.fetch_all(self.source, "select uuid, name from attachment order by id"):
+            uuid = normalize_text(row["uuid"])
+            if not uuid:
+                continue
+            source_path = self.backup_root / "data" / "attachments" / uuid[0] / uuid[1] / uuid
+            target_path = self.forgejo_root / "data" / "attachments" / uuid[0] / uuid[1] / uuid
+            self.compare_file_contents(check, f"attachment:{normalize_text(row['name'])}", source_path, target_path)
+
+        source_stars = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["uid"]), ""),
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from star order by id")
+        }
+        target_stars = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["uid"]), ""),
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from star order by id")
+        }
+        compare_entity("stars", source_stars, target_stars)
+
+        source_watches = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["mode"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from watch order by id")
+        }
+        target_watches = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["mode"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from watch order by id")
+        }
+        compare_entity("watches", source_watches, target_watches)
+
+        source_collaboration = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                normalize_int(row["mode"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from collaboration order by id")
+        }
+        target_collaboration = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                normalize_int(row["mode"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from collaboration order by id")
+        }
+        compare_entity("collaboration", source_collaboration, target_collaboration)
+
+        self.add_note(
+            "Validated "
+            f"{len(source_issues)} issues, "
+            f"{len(source_comments)} comments, "
+            f"{len(source_pull_requests)} pull requests, "
+            f"{len(source_releases)} releases, "
+            f"{len(source_attachments)} attachments, "
+            f"{len(source_stars)} stars, "
+            f"{len(source_watches)} watches, and "
+            f"{len(source_collaboration)} collaborators"
+        )
 
     def validate_git_repositories(self) -> None:
         check = "git-repositories"
@@ -1137,6 +1700,9 @@ class Validator:
                 """,
             )
         }
+        imported_comment_ids = {
+            row["id"] for row in self.fetch_all(self.target, "select id from comment order by id")
+        }
 
         expected_actions: dict[int, tuple[Any, ...]] = {}
         skipped = 0
@@ -1150,11 +1716,11 @@ class Validator:
 
             if (
                 op_type not in SUPPORTED_ACTIVITY_OP_TYPES
-                or comment_id != 0
                 or is_deleted != 0
                 or (user_id and user_id not in source_user_names)
                 or (act_user_id and act_user_id not in source_user_names)
                 or (repo_id and repo_id not in source_repo_keys)
+                or (comment_id and comment_id not in imported_comment_ids)
             ):
                 skipped += 1
                 continue
@@ -1164,6 +1730,7 @@ class Validator:
                 source_user_names.get(user_id, ""),
                 source_user_names.get(act_user_id, ""),
                 source_repo_keys.get(repo_id, ("", "")),
+                comment_id,
                 normalize_text(row["ref_name"]),
                 normalize_int(row["is_private"]),
                 normalize_text(row["content"]),
@@ -1177,6 +1744,7 @@ class Validator:
                 target_user_names.get(normalize_int(row["user_id"]), ""),
                 target_user_names.get(normalize_int(row["act_user_id"]), ""),
                 target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["comment_id"]),
                 normalize_text(row["ref_name"]),
                 normalize_int(row["is_private"]),
                 normalize_text(row["content"]),
@@ -1192,7 +1760,7 @@ class Validator:
                 )
 
         self.add_note(
-            f"Validated {len(expected_actions)} activity rows and confirmed {skipped} intentionally skipped source rows"
+            f"Validated {len(expected_actions)} activity rows and confirmed {skipped} skipped source rows after dependency remapping"
         )
 
     def write_report(self) -> None:

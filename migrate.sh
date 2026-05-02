@@ -380,10 +380,6 @@ main() {
     log "Running Forgejo doctor"
     append_doctor_report || true
 
-    log "Restarting Forgejo for local verification"
-    podman start "$FORGEJO_CONTAINER_NAME" >/dev/null
-    wait_for_forgejo
-
     log "Validating migrated data"
     python3 "$VALIDATOR" \
         --source-db "$SOURCE_DB" \
@@ -392,6 +388,10 @@ main() {
         --forgejo-root "$FORGEJO_DIR" \
         --state-path "$STATE_FILE" \
         --report-path "$VALIDATION_REPORT"
+
+    log "Restarting Forgejo for local verification"
+    podman start "$FORGEJO_CONTAINER_NAME" >/dev/null
+    wait_for_forgejo
 
     log "Migration complete"
     printf '\n'

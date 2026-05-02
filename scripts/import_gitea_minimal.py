@@ -48,6 +48,14 @@ def nullable_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def normalize_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def normalize_int(value: Any) -> int:
+    return int(value or 0)
+
+
 def format_duration_from_ns(value: Any) -> str:
     total_seconds = int((value or 0)) // 1_000_000_000
     if total_seconds <= 0:
@@ -69,7 +77,7 @@ def path_join(*segments: str) -> str:
     return "/".join(urllib.parse.quote(segment, safe="") for segment in segments)
 
 
-SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 8, 9, 16, 17, 18, 19, 20}
+SUPPORTED_ACTIVITY_OP_TYPES = {1, 2, 5, 6, 8, 9, 10, 12, 16, 17, 18, 19, 20, 24}
 
 
 @dataclass
@@ -166,6 +174,24 @@ class Importer:
         self.source_team_units = self.fetch_grouped("select * from team_unit order by team_id, type", "team_id")
         self.source_org_users = self.fetch_grouped("select * from org_user order by org_id, uid", "org_id")
         self.source_repositories = self.fetch_all("select * from repository order by id")
+        self.source_labels = self.fetch_all("select * from label order by id")
+        self.source_milestones = self.fetch_all("select * from milestone order by id")
+        self.source_issues = self.fetch_all("select * from issue order by id")
+        self.source_issue_labels = self.fetch_all("select * from issue_label order by id")
+        self.source_issue_assignees = self.fetch_all("select * from issue_assignees order by id")
+        self.source_issue_users = self.fetch_all("select * from issue_user order by id")
+        self.source_comments = self.fetch_all("select * from comment order by id")
+        self.source_pull_requests = self.fetch_all("select * from pull_request order by id")
+        self.source_reviews = self.fetch_all("select * from review order by id")
+        self.source_review_states = self.fetch_all("select * from review_state order by id")
+        self.source_issue_content_history = self.fetch_all("select * from issue_content_history order by id")
+        self.source_reactions = self.fetch_all("select * from reaction order by id")
+        self.source_releases = self.fetch_all("select * from release order by id")
+        self.source_uploads = self.fetch_all("select * from upload order by id")
+        self.source_attachments = self.fetch_all("select * from attachment order by id")
+        self.source_stars = self.fetch_all("select * from star order by id")
+        self.source_watches = self.fetch_all("select * from watch order by id")
+        self.source_collaborations = self.fetch_all("select * from collaboration order by id")
         self.source_mirrors = {
             row["repo_id"]: row for row in self.fetch_all("select * from mirror order by repo_id")
         }
@@ -609,9 +635,17 @@ class Importer:
                     original_url = ?,
                     default_branch = ?,
                     wiki_branch = ?,
+                    num_watches = ?,
+                    num_stars = ?,
+                    num_forks = ?,
+                    num_milestones = ?,
+                    num_closed_milestones = ?,
+                    num_projects = ?,
+                    num_closed_projects = ?,
                     is_private = ?,
                     is_empty = ?,
                     is_archived = ?,
+                    is_mirror = ?,
                     status = ?,
                     is_fork = ?,
                     fork_id = ?,
@@ -638,9 +672,17 @@ class Importer:
                     repo["original_url"],
                     repo["default_branch"],
                     repo["default_wiki_branch"],
+                    repo["num_watches"],
+                    repo["num_stars"],
+                    repo["num_forks"],
+                    repo["num_milestones"],
+                    repo["num_closed_milestones"],
+                    repo["num_projects"],
+                    repo["num_closed_projects"],
                     repo["is_private"],
                     repo["is_empty"],
                     repo["is_archived"],
+                    repo["is_mirror"],
                     repo["status"],
                     repo["is_fork"],
                     repo["fork_id"],
@@ -725,6 +767,7 @@ class Importer:
                     ),
                 )
 
+        self.import_project_and_social_data()
         self.import_packages()
         self.import_activity_actions()
 
@@ -756,6 +799,684 @@ class Importer:
         if row is None:
             raise ImportErrorWithContext(f"Target Forgejo repo not found: {owner}/{lower_name}")
         return row
+
+    def build_user_id_map(self) -> dict[int, int]:
+        assert self.target is not None
+        source_user_rows = {
+            row["id"]: row["name"]
+            for row in self.fetch_all("select id, name from user order by id")
+        }
+        target_user_rows = {
+            row["name"]: row["id"]
+            for row in self.target.execute("select id, name from user order by id").fetchall()
+        }
+        return {
+            source_id: target_user_rows[name]
+            for source_id, name in source_user_rows.items()
+            if name in target_user_rows
+        }
+
+    def build_repo_id_map(self) -> dict[int, int]:
+        assert self.target is not None
+        source_repo_rows = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.source_repositories
+        }
+        target_repo_rows = {
+            (row["owner_name"], row["lower_name"]): row["id"]
+            for row in self.target.execute(
+                """
+                select repository.id, owner.name as owner_name, repository.lower_name
+                from repository
+                join user owner on owner.id = repository.owner_id
+                order by repository.id
+                """,
+            ).fetchall()
+        }
+        return {
+            source_id: target_repo_rows[key]
+            for source_id, key in source_repo_rows.items()
+            if key in target_repo_rows
+        }
+
+    def reset_sqlite_sequences(self, table_names: tuple[str, ...]) -> None:
+        assert self.target is not None
+        for table_name in table_names:
+            max_id = self.target.execute(f"select coalesce(max(id), 0) from {table_name}").fetchone()[0]
+            self.target.execute("delete from sqlite_sequence where name = ?", (table_name,))
+            self.target.execute(
+                "insert into sqlite_sequence (name, seq) values (?, ?)",
+                (table_name, max_id),
+            )
+
+    def copy_attachment_files(self) -> None:
+        source_attachments_dir = self.backup_root / "data" / "attachments"
+        target_attachments_dir = self.forgejo_root / "data" / "attachments"
+        if target_attachments_dir.exists():
+            shutil.rmtree(target_attachments_dir)
+        if source_attachments_dir.exists():
+            shutil.copytree(source_attachments_dir, target_attachments_dir, symlinks=True)
+            for root, dirs, files in os.walk(target_attachments_dir):
+                os.chmod(root, 0o777)
+                for dirname in dirs:
+                    os.chmod(Path(root) / dirname, 0o777)
+                for filename in files:
+                    os.chmod(Path(root) / filename, 0o666)
+        else:
+            target_attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    def import_project_and_social_data(self) -> None:
+        assert self.target is not None
+
+        log("Replacing issues, pull requests, releases, attachments, stars, watches, and collaborators offline")
+        self.copy_attachment_files()
+
+        user_id_map = self.build_user_id_map()
+        repo_id_map = self.build_repo_id_map()
+        label_ids = {row["id"] for row in self.source_labels}
+        milestone_ids = {row["id"] for row in self.source_milestones}
+        issue_ids = {row["id"] for row in self.source_issues}
+        comment_ids = {row["id"] for row in self.source_comments}
+        review_ids = {row["id"] for row in self.source_reviews}
+        pull_request_ids = {row["id"] for row in self.source_pull_requests}
+        release_ids = {row["id"] for row in self.source_releases}
+
+        for table_name in (
+            "issue_content_history",
+            "reaction",
+            "review_state",
+            "review",
+            "pull_request",
+            "comment",
+            "issue_assignees",
+            "issue_user",
+            "issue_label",
+            "attachment",
+            "upload",
+            "release",
+            "star",
+            "watch",
+            "collaboration",
+            "issue",
+            "milestone",
+            "label",
+        ):
+            self.target.execute(f"delete from {table_name}")
+
+        for label in self.source_labels:
+            self.target.execute(
+                """
+                insert into label (
+                    id,
+                    repo_id,
+                    org_id,
+                    name,
+                    exclusive,
+                    description,
+                    color,
+                    num_issues,
+                    num_closed_issues,
+                    created_unix,
+                    updated_unix,
+                    archived_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    label["id"],
+                    repo_id_map.get(label["repo_id"], 0) if label["repo_id"] else 0,
+                    user_id_map.get(label["org_id"], 0) if label["org_id"] else 0,
+                    label["name"],
+                    label["exclusive"],
+                    label["description"],
+                    label["color"],
+                    label["num_issues"],
+                    label["num_closed_issues"],
+                    label["created_unix"],
+                    label["updated_unix"],
+                    label["archived_unix"],
+                ),
+            )
+
+        for milestone in self.source_milestones:
+            self.target.execute(
+                """
+                insert into milestone (
+                    id,
+                    repo_id,
+                    name,
+                    content,
+                    is_closed,
+                    num_issues,
+                    num_closed_issues,
+                    completeness,
+                    created_unix,
+                    updated_unix,
+                    deadline_unix,
+                    closed_date_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    milestone["id"],
+                    repo_id_map.get(milestone["repo_id"], 0),
+                    milestone["name"],
+                    milestone["content"],
+                    milestone["is_closed"],
+                    milestone["num_issues"],
+                    milestone["num_closed_issues"],
+                    milestone["completeness"],
+                    milestone["created_unix"],
+                    milestone["updated_unix"],
+                    milestone["deadline_unix"],
+                    milestone["closed_date_unix"],
+                ),
+            )
+
+        for issue in self.source_issues:
+            self.target.execute(
+                """
+                insert into issue (
+                    id,
+                    repo_id,
+                    "index",
+                    poster_id,
+                    original_author,
+                    original_author_id,
+                    name,
+                    content,
+                    content_version,
+                    milestone_id,
+                    priority,
+                    is_closed,
+                    is_pull,
+                    num_comments,
+                    ref,
+                    pin_order,
+                    deadline_unix,
+                    created,
+                    created_unix,
+                    updated_unix,
+                    closed_unix,
+                    is_locked
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    issue["id"],
+                    repo_id_map.get(issue["repo_id"], 0),
+                    issue["index"],
+                    user_id_map.get(issue["poster_id"], 0),
+                    issue["original_author"],
+                    user_id_map.get(issue["original_author_id"], 0) if issue["original_author_id"] else 0,
+                    issue["name"],
+                    issue["content"],
+                    issue["content_version"],
+                    issue["milestone_id"] if issue["milestone_id"] in milestone_ids else 0,
+                    issue["priority"],
+                    issue["is_closed"],
+                    issue["is_pull"],
+                    issue["num_comments"],
+                    issue["ref"],
+                    0,
+                    issue["deadline_unix"],
+                    issue["created_unix"],
+                    issue["created_unix"],
+                    issue["updated_unix"],
+                    issue["closed_unix"],
+                    issue["is_locked"],
+                ),
+            )
+
+        for issue_label in self.source_issue_labels:
+            if issue_label["issue_id"] not in issue_ids or issue_label["label_id"] not in label_ids:
+                continue
+            self.target.execute(
+                "insert into issue_label (id, issue_id, label_id) values (?, ?, ?)",
+                (issue_label["id"], issue_label["issue_id"], issue_label["label_id"]),
+            )
+
+        for assignee in self.source_issue_assignees:
+            if assignee["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                "insert into issue_assignees (id, assignee_id, issue_id) values (?, ?, ?)",
+                (
+                    assignee["id"],
+                    user_id_map.get(assignee["assignee_id"], 0),
+                    assignee["issue_id"],
+                ),
+            )
+
+        for issue_user in self.source_issue_users:
+            if issue_user["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into issue_user (id, uid, issue_id, is_read, is_mentioned)
+                values (?, ?, ?, ?, ?)
+                """,
+                (
+                    issue_user["id"],
+                    user_id_map.get(issue_user["uid"], 0),
+                    issue_user["issue_id"],
+                    issue_user["is_read"],
+                    issue_user["is_mentioned"],
+                ),
+            )
+
+        for comment in self.source_comments:
+            if comment["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into comment (
+                    id,
+                    type,
+                    poster_id,
+                    original_author,
+                    original_author_id,
+                    issue_id,
+                    label_id,
+                    old_project_id,
+                    project_id,
+                    old_milestone_id,
+                    milestone_id,
+                    time_id,
+                    assignee_id,
+                    removed_assignee,
+                    assignee_team_id,
+                    resolve_doer_id,
+                    old_title,
+                    new_title,
+                    old_ref,
+                    new_ref,
+                    dependent_issue_id,
+                    commit_id,
+                    line,
+                    tree_path,
+                    content,
+                    content_version,
+                    patch,
+                    created_unix,
+                    updated_unix,
+                    commit_sha,
+                    review_id,
+                    invalidated,
+                    ref_repo_id,
+                    ref_issue_id,
+                    ref_comment_id,
+                    ref_action,
+                    ref_is_pull
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comment["id"],
+                    comment["type"],
+                    user_id_map.get(comment["poster_id"], 0),
+                    comment["original_author"],
+                    user_id_map.get(comment["original_author_id"], 0) if comment["original_author_id"] else 0,
+                    comment["issue_id"],
+                    comment["label_id"] if comment["label_id"] in label_ids else 0,
+                    comment["old_project_id"],
+                    comment["project_id"],
+                    comment["old_milestone_id"],
+                    comment["milestone_id"] if comment["milestone_id"] in milestone_ids else 0,
+                    comment["time_id"],
+                    user_id_map.get(comment["assignee_id"], 0) if comment["assignee_id"] else 0,
+                    comment["removed_assignee"],
+                    comment["assignee_team_id"],
+                    user_id_map.get(comment["resolve_doer_id"], 0) if comment["resolve_doer_id"] else 0,
+                    comment["old_title"],
+                    comment["new_title"],
+                    comment["old_ref"],
+                    comment["new_ref"],
+                    comment["dependent_issue_id"] if comment["dependent_issue_id"] in issue_ids else 0,
+                    comment["commit_id"],
+                    comment["line"],
+                    comment["tree_path"],
+                    comment["content"],
+                    comment["content_version"],
+                    comment["patch"],
+                    comment["created_unix"],
+                    comment["updated_unix"],
+                    comment["commit_sha"],
+                    comment["review_id"] if comment["review_id"] in review_ids else 0,
+                    comment["invalidated"],
+                    repo_id_map.get(comment["ref_repo_id"], 0) if comment["ref_repo_id"] else 0,
+                    comment["ref_issue_id"] if comment["ref_issue_id"] in issue_ids else 0,
+                    comment["ref_comment_id"] if comment["ref_comment_id"] in comment_ids else 0,
+                    comment["ref_action"],
+                    comment["ref_is_pull"],
+                ),
+            )
+
+        for pull_request in self.source_pull_requests:
+            if pull_request["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into pull_request (
+                    id,
+                    type,
+                    status,
+                    conflicted_files,
+                    commits_ahead,
+                    commits_behind,
+                    changed_protected_files,
+                    issue_id,
+                    "index",
+                    head_repo_id,
+                    base_repo_id,
+                    head_branch,
+                    base_branch,
+                    merge_base,
+                    allow_maintainer_edit,
+                    has_merged,
+                    merged_commit_id,
+                    merger_id,
+                    merged_unix,
+                    flow
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pull_request["id"],
+                    pull_request["type"],
+                    pull_request["status"],
+                    pull_request["conflicted_files"],
+                    pull_request["commits_ahead"],
+                    pull_request["commits_behind"],
+                    pull_request["changed_protected_files"],
+                    pull_request["issue_id"],
+                    pull_request["index"],
+                    repo_id_map.get(pull_request["head_repo_id"], 0) if pull_request["head_repo_id"] else 0,
+                    repo_id_map.get(pull_request["base_repo_id"], 0) if pull_request["base_repo_id"] else 0,
+                    pull_request["head_branch"],
+                    pull_request["base_branch"],
+                    pull_request["merge_base"],
+                    pull_request["allow_maintainer_edit"],
+                    pull_request["has_merged"],
+                    pull_request["merged_commit_id"],
+                    user_id_map.get(pull_request["merger_id"], 0) if pull_request["merger_id"] else 0,
+                    pull_request["merged_unix"],
+                    pull_request["flow"],
+                ),
+            )
+
+        for review in self.source_reviews:
+            if review["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into review (
+                    id,
+                    type,
+                    reviewer_id,
+                    reviewer_team_id,
+                    original_author,
+                    original_author_id,
+                    issue_id,
+                    content,
+                    official,
+                    commit_id,
+                    stale,
+                    dismissed,
+                    created_unix,
+                    updated_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review["id"],
+                    review["type"],
+                    user_id_map.get(review["reviewer_id"], 0) if review["reviewer_id"] else 0,
+                    review["reviewer_team_id"],
+                    review["original_author"],
+                    user_id_map.get(review["original_author_id"], 0) if review["original_author_id"] else 0,
+                    review["issue_id"],
+                    review["content"],
+                    review["official"],
+                    review["commit_id"],
+                    review["stale"],
+                    review["dismissed"],
+                    review["created_unix"],
+                    review["updated_unix"],
+                ),
+            )
+
+        for review_state in self.source_review_states:
+            if review_state["pull_id"] not in pull_request_ids:
+                continue
+            self.target.execute(
+                """
+                insert into review_state (id, user_id, pull_id, commit_sha, updated_files, updated_unix)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_state["id"],
+                    user_id_map.get(review_state["user_id"], 0),
+                    review_state["pull_id"],
+                    review_state["commit_sha"],
+                    review_state["updated_files"],
+                    review_state["updated_unix"],
+                ),
+            )
+
+        for history_row in self.source_issue_content_history:
+            if history_row["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into issue_content_history (
+                    id,
+                    poster_id,
+                    issue_id,
+                    comment_id,
+                    edited_unix,
+                    content_text,
+                    is_first_created,
+                    is_deleted
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    history_row["id"],
+                    user_id_map.get(history_row["poster_id"], 0) if history_row["poster_id"] else 0,
+                    history_row["issue_id"],
+                    history_row["comment_id"] if history_row["comment_id"] in comment_ids else 0,
+                    history_row["edited_unix"],
+                    history_row["content_text"],
+                    history_row["is_first_created"],
+                    history_row["is_deleted"],
+                ),
+            )
+
+        for reaction in self.source_reactions:
+            if reaction["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into reaction (
+                    id,
+                    type,
+                    issue_id,
+                    comment_id,
+                    user_id,
+                    original_author_id,
+                    original_author,
+                    created_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reaction["id"],
+                    reaction["type"],
+                    reaction["issue_id"],
+                    reaction["comment_id"] if reaction["comment_id"] in comment_ids else 0,
+                    user_id_map.get(reaction["user_id"], 0),
+                    user_id_map.get(reaction["original_author_id"], 0)
+                    if reaction["original_author_id"]
+                    else 0,
+                    reaction["original_author"],
+                    reaction["created_unix"],
+                ),
+            )
+
+        for release in self.source_releases:
+            self.target.execute(
+                """
+                insert into release (
+                    id,
+                    repo_id,
+                    publisher_id,
+                    tag_name,
+                    original_author,
+                    original_author_id,
+                    lower_tag_name,
+                    target,
+                    title,
+                    sha1,
+                    hide_archive_links,
+                    num_commits,
+                    note,
+                    is_draft,
+                    is_prerelease,
+                    is_tag,
+                    created_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    release["id"],
+                    repo_id_map.get(release["repo_id"], 0),
+                    user_id_map.get(release["publisher_id"], 0) if release["publisher_id"] else 0,
+                    release["tag_name"],
+                    release["original_author"],
+                    user_id_map.get(release["original_author_id"], 0)
+                    if release["original_author_id"]
+                    else 0,
+                    release["lower_tag_name"],
+                    release["target"],
+                    release["title"],
+                    release["sha1"],
+                    0,
+                    release["num_commits"],
+                    release["note"],
+                    release["is_draft"],
+                    release["is_prerelease"],
+                    release["is_tag"],
+                    release["created_unix"],
+                ),
+            )
+
+        for upload in self.source_uploads:
+            self.target.execute(
+                "insert into upload (id, uuid, name) values (?, ?, ?)",
+                (upload["id"], upload["uuid"], upload["name"]),
+            )
+
+        for attachment in self.source_attachments:
+            self.target.execute(
+                """
+                insert into attachment (
+                    id,
+                    uuid,
+                    uploader_id,
+                    repo_id,
+                    issue_id,
+                    release_id,
+                    comment_id,
+                    name,
+                    download_count,
+                    size,
+                    created_unix,
+                    external_url
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment["id"],
+                    attachment["uuid"],
+                    user_id_map.get(attachment["uploader_id"], 0) if attachment["uploader_id"] else 0,
+                    repo_id_map.get(attachment["repo_id"], 0) if attachment["repo_id"] else 0,
+                    attachment["issue_id"] if attachment["issue_id"] in issue_ids else 0,
+                    attachment["release_id"] if attachment["release_id"] in release_ids else 0,
+                    attachment["comment_id"] if attachment["comment_id"] in comment_ids else 0,
+                    attachment["name"],
+                    attachment["download_count"],
+                    attachment["size"],
+                    attachment["created_unix"],
+                    None,
+                ),
+            )
+
+        for star in self.source_stars:
+            self.target.execute(
+                "insert into star (id, uid, repo_id, created_unix) values (?, ?, ?, ?)",
+                (
+                    star["id"],
+                    user_id_map.get(star["uid"], 0),
+                    repo_id_map.get(star["repo_id"], 0),
+                    star["created_unix"],
+                ),
+            )
+
+        for watch in self.source_watches:
+            self.target.execute(
+                """
+                insert into watch (id, user_id, repo_id, mode, created_unix, updated_unix)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    watch["id"],
+                    user_id_map.get(watch["user_id"], 0),
+                    repo_id_map.get(watch["repo_id"], 0),
+                    watch["mode"],
+                    watch["created_unix"],
+                    watch["updated_unix"],
+                ),
+            )
+
+        for collaboration in self.source_collaborations:
+            self.target.execute(
+                """
+                insert into collaboration (id, repo_id, user_id, mode, created_unix, updated_unix)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    collaboration["id"],
+                    repo_id_map.get(collaboration["repo_id"], 0),
+                    user_id_map.get(collaboration["user_id"], 0),
+                    collaboration["mode"],
+                    collaboration["created_unix"],
+                    collaboration["updated_unix"],
+                ),
+            )
+
+        self.reset_sqlite_sequences(
+            (
+                "attachment",
+                "collaboration",
+                "comment",
+                "issue",
+                "issue_assignees",
+                "issue_content_history",
+                "issue_label",
+                "issue_user",
+                "label",
+                "milestone",
+                "pull_request",
+                "reaction",
+                "release",
+                "review",
+                "review_state",
+                "star",
+                "upload",
+                "watch",
+            )
+        )
 
     def sync_user_emails(self, source_user: sqlite3.Row, target_user_id: int) -> None:
         assert self.target is not None
@@ -897,40 +1618,8 @@ class Importer:
         self.target.execute("delete from package_cleanup_rule")
         self.target.execute("delete from package")
 
-        source_user_rows = {
-            row["id"]: row["name"]
-            for row in self.fetch_all("select id, name from user order by id")
-        }
-        target_user_rows = {
-            row["name"]: row["id"]
-            for row in self.target.execute("select id, name from user order by id").fetchall()
-        }
-        user_id_map = {
-            source_id: target_user_rows[name]
-            for source_id, name in source_user_rows.items()
-            if name in target_user_rows
-        }
-
-        source_repo_rows = {
-            row["id"]: (row["owner_name"], row["lower_name"])
-            for row in self.source_repositories
-        }
-        target_repo_rows = {
-            (row["owner_name"], row["lower_name"]): row["id"]
-            for row in self.target.execute(
-                """
-                select repository.id, owner.name as owner_name, repository.lower_name
-                from repository
-                join user owner on owner.id = repository.owner_id
-                order by repository.id
-                """,
-            ).fetchall()
-        }
-        repo_id_map = {
-            source_id: target_repo_rows[key]
-            for source_id, key in source_repo_rows.items()
-            if key in target_repo_rows
-        }
+        user_id_map = self.build_user_id_map()
+        repo_id_map = self.build_repo_id_map()
 
         for package in self.source_packages:
             self.target.execute(
@@ -1090,35 +1779,26 @@ class Importer:
                 ),
             )
 
-        for table_name in (
-            "package",
-            "package_blob",
-            "package_cleanup_rule",
-            "package_file",
-            "package_property",
-            "package_version",
-        ):
-            max_id = self.target.execute(f"select coalesce(max(id), 0) from {table_name}").fetchone()[0]
-            self.target.execute("delete from sqlite_sequence where name = ?", (table_name,))
-            self.target.execute(
-                "insert into sqlite_sequence (name, seq) values (?, ?)",
-                (table_name, max_id),
+        self.reset_sqlite_sequences(
+            (
+                "package",
+                "package_blob",
+                "package_cleanup_rule",
+                "package_file",
+                "package_property",
+                "package_version",
             )
+        )
 
     def import_activity_actions(self) -> None:
         assert self.target is not None
 
-        log("Replacing import-generated activity feed entries with source repository activity")
+        log("Replacing import-generated activity feed entries with source activity history")
         self.target.execute("delete from action")
 
-        source_user_map = {
-            row["id"]: self.find_target_user(row["name"])["id"]
-            for row in self.source.execute("select id, name from user order by id")
-        }
-        source_repo_map = {
-            row["id"]: self.find_target_repo(row["owner_name"], row["lower_name"])["id"]
-            for row in self.source_repositories
-        }
+        source_user_map = self.build_user_id_map()
+        source_repo_map = self.build_repo_id_map()
+        imported_comment_ids = {row["id"] for row in self.target.execute("select id from comment order by id").fetchall()}
 
         max_action_id = 0
         imported = 0
@@ -1129,7 +1809,7 @@ class Importer:
             comment_id = int(action["comment_id"] or 0)
             is_deleted = int(action["is_deleted"] or 0)
 
-            if op_type not in SUPPORTED_ACTIVITY_OP_TYPES or comment_id != 0 or is_deleted != 0:
+            if op_type not in SUPPORTED_ACTIVITY_OP_TYPES or is_deleted != 0:
                 skipped += 1
                 continue
 
@@ -1144,6 +1824,9 @@ class Importer:
                 skipped += 1
                 continue
             if repo_id and repo_id not in source_repo_map:
+                skipped += 1
+                continue
+            if comment_id and comment_id not in imported_comment_ids:
                 skipped += 1
                 continue
 
@@ -1169,7 +1852,7 @@ class Importer:
                     op_type,
                     source_user_map.get(act_user_id, 0),
                     source_repo_map.get(repo_id, 0),
-                    0,
+                    comment_id,
                     nullable_text(action["ref_name"]),
                     int(action["is_private"] or 0),
                     nullable_text(action["content"]),
@@ -1208,6 +1891,14 @@ class Importer:
             "teams": self.target.execute("select count(*) from team").fetchone()[0],
             "team_memberships": self.target.execute("select count(*) from team_user").fetchone()[0],
             "repositories": self.target.execute("select count(*) from repository").fetchone()[0],
+            "issues": self.target.execute("select count(*) from issue where is_pull = 0").fetchone()[0],
+            "pull_requests": self.target.execute("select count(*) from pull_request").fetchone()[0],
+            "comments": self.target.execute("select count(*) from comment").fetchone()[0],
+            "releases": self.target.execute("select count(*) from release").fetchone()[0],
+            "attachments": self.target.execute("select count(*) from attachment").fetchone()[0],
+            "stars": self.target.execute("select count(*) from star").fetchone()[0],
+            "watches": self.target.execute("select count(*) from watch").fetchone()[0],
+            "collaborators": self.target.execute("select count(*) from collaboration").fetchone()[0],
             "pull_mirrors": self.target.execute("select count(*) from mirror").fetchone()[0],
             "push_mirrors": self.target.execute("select count(*) from push_mirror").fetchone()[0],
             "ssh_keys": self.target.execute("select count(*) from public_key").fetchone()[0],
@@ -1231,6 +1922,14 @@ class Importer:
             f"- Teams: {len(self.source_teams)}",
             f"- Team memberships: {sum(len(v) for v in self.source_team_users.values())}",
             f"- Repositories: {len(self.source_repositories)}",
+            f"- Issues: {sum(1 for row in self.source_issues if not bool_value(row['is_pull']))}",
+            f"- Pull requests: {len(self.source_pull_requests)}",
+            f"- Comments: {len(self.source_comments)}",
+            f"- Releases: {len(self.source_releases)}",
+            f"- Attachments: {len(self.source_attachments)}",
+            f"- Stars: {len(self.source_stars)}",
+            f"- Watches: {len(self.source_watches)}",
+            f"- Collaborators: {len(self.source_collaborations)}",
             f"- Pull mirrors: {len(self.source_mirrors)}",
             f"- Push mirrors: {sum(len(v) for v in self.source_push_mirrors.values())}",
             f"- SSH keys: {sum(len(v) for v in self.source_keys.values())}",
@@ -1247,6 +1946,14 @@ class Importer:
             f"- Teams: {target_counts['teams']}",
             f"- Team memberships: {target_counts['team_memberships']}",
             f"- Repositories: {target_counts['repositories']}",
+            f"- Issues: {target_counts['issues']}",
+            f"- Pull requests: {target_counts['pull_requests']}",
+            f"- Comments: {target_counts['comments']}",
+            f"- Releases: {target_counts['releases']}",
+            f"- Attachments: {target_counts['attachments']}",
+            f"- Stars: {target_counts['stars']}",
+            f"- Watches: {target_counts['watches']}",
+            f"- Collaborators: {target_counts['collaborators']}",
             f"- Pull mirrors: {target_counts['pull_mirrors']} (expected after fallbacks: {expected_pull_mirrors})",
             f"- Push mirrors: {target_counts['push_mirrors']}",
             f"- SSH keys: {target_counts['ssh_keys']}",
@@ -1268,8 +1975,8 @@ class Importer:
             "",
             "## Activity Feed Notes",
             "",
-            f"- Imported repository-safe activity rows: {self.imported_activity_count}",
-            f"- Skipped activity rows that depend on unmigrated issues, comments, pull requests, or releases: {self.skipped_activity_count}",
+            f"- Imported activity rows: {self.imported_activity_count}",
+            f"- Skipped activity rows after dependency remapping: {self.skipped_activity_count}",
             "",
             "## Warnings",
             "",

@@ -49,8 +49,9 @@ This will:
 
 - rebuild `./forgejo`
 - start a local Forgejo 15.0 instance with Podman
-- import the minimal supported data set from `./backup/gitea`
+- import users, organizations, teams, repositories, issues, comments, releases, stars, watches, collaborators, and attachments from `./backup/gitea`
 - import the container package registry data that Forgejo 15 can retain
+- replay the source activity feed rows that Forgejo 15 still understands
 - validate the migrated data against the backup and fail if mismatches are found
 - leave Forgejo running on `http://localhost:3000`
 
@@ -63,12 +64,16 @@ Generated outputs:
 ## Todo
 
 - Based on the migration script, tell me what differences exist in how the data is stored between Gitea -> Forgejo. Is any meaningful data omitted?
-- Since it should be possible, migrate other data (issues, issue comments, pull requests, pull request comments, stars, releases, release attachments)
-- Determine if actions data can be migrated
+- Decide whether to add watches/collaborators/issue edit history to the user-facing validation summary, since the validator already checks them
 
 ## Nice to have
 
-- Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo)
-- Document we are migrating from Gitea 1.26 to Forgejo 15.0
-- Use Forgejo customizations instead (it's one of the repos: `backup/gitea/repos/nico/forgejo-customize.git`)
+- Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo in the future)
+- Document clearly we are migrating from Gitea 1.26 to Forgejo 15.0
+- Use Forgejo customizations instead (it's one of the repos: `backup/gitea/repos/nico/forgejo-customize.git`) and use the default Forgejo theme
+
+## Theming
+
+- How has Codeberg modified their styling for Forgejo?
+- Can we create something similar?
 - Potentially, apply some CSS fixes to the custom theme to improve the look & feel of the Forgejo client; should be inspired by Codeberg's modifications (can we find that online somewhere?)
