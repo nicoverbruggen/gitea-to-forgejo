@@ -133,6 +133,7 @@ class Importer:
         forgejo_db: Path,
         backup_root: Path,
         forgejo_root: Path,
+        password_mode: str,
         report_path: Path,
         state_path: Path,
         base_url: str | None = None,
@@ -143,6 +144,7 @@ class Importer:
         self.forgejo_db = forgejo_db
         self.backup_root = backup_root
         self.forgejo_root = forgejo_root
+        self.password_mode = password_mode
         self.report_path = report_path
         self.state_path = state_path
         self.api = ForgejoAPI(base_url, token) if base_url and token else None
@@ -174,6 +176,7 @@ class Importer:
         self.source_team_units = self.fetch_grouped("select * from team_unit order by team_id, type", "team_id")
         self.source_org_users = self.fetch_grouped("select * from org_user order by org_id, uid", "org_id")
         self.source_repositories = self.fetch_all("select * from repository order by id")
+        self.source_repo_units = self.fetch_all("select * from repo_unit order by repo_id, type, id")
         self.source_labels = self.fetch_all("select * from label order by id")
         self.source_milestones = self.fetch_all("select * from milestone order by id")
         self.source_issues = self.fetch_all("select * from issue order by id")
@@ -459,8 +462,26 @@ class Importer:
         for source_user in self.source_users:
             target_user = self.find_target_user(source_user["name"])
             self.sync_user_emails(source_user, target_user["id"])
-            self.target.execute(
+            if self.password_mode == "preserve":
+                password_sql = """
+                    passwd = ?,
+                    passwd_hash_algo = ?,
+                    must_change_password = ?,
+                    rands = ?,
+                    salt = ?,
                 """
+                password_params: tuple[Any, ...] = (
+                    source_user["passwd"],
+                    source_user["passwd_hash_algo"],
+                    source_user["must_change_password"],
+                    source_user["rands"],
+                    source_user["salt"],
+                )
+            else:
+                password_sql = ""
+                password_params = ()
+            self.target.execute(
+                f"""
                 update user
                 set email = ?,
                     full_name = ?,
@@ -485,6 +506,7 @@ class Importer:
                     use_custom_avatar = ?,
                     visibility = ?,
                     diff_view_style = ?,
+                    {password_sql}
                     keep_activity_private = ?
                 where id = ?
                 """,
@@ -512,6 +534,7 @@ class Importer:
                     source_user["use_custom_avatar"],
                     source_user["visibility"],
                     source_user["diff_view_style"],
+                    *password_params,
                     source_user["keep_activity_private"],
                     target_user["id"],
                 ),
@@ -768,6 +791,7 @@ class Importer:
                     ),
                 )
 
+        self.import_repo_units()
         self.import_project_and_social_data()
         self.import_packages()
         self.import_activity_actions()
@@ -865,6 +889,39 @@ class Importer:
                     os.chmod(Path(root) / filename, 0o666)
         else:
             target_attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    def import_repo_units(self) -> None:
+        assert self.target is not None
+
+        repo_id_map = self.build_repo_id_map()
+        self.target.execute("delete from repo_unit")
+        for repo_unit in self.source_repo_units:
+            target_repo_id = repo_id_map.get(repo_unit["repo_id"])
+            if target_repo_id is None:
+                continue
+            self.target.execute(
+                """
+                insert into repo_unit (
+                    id,
+                    repo_id,
+                    type,
+                    config,
+                    created_unix,
+                    default_permissions
+                )
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo_unit["id"],
+                    target_repo_id,
+                    repo_unit["type"],
+                    repo_unit["config"],
+                    repo_unit["created_unix"],
+                    repo_unit["everyone_access_mode"],
+                ),
+            )
+
+        self.reset_sqlite_sequences(("repo_unit",))
 
     def import_project_and_social_data(self) -> None:
         assert self.target is not None
@@ -1958,6 +2015,7 @@ class Importer:
             "teams": self.target.execute("select count(*) from team").fetchone()[0],
             "team_memberships": self.target.execute("select count(*) from team_user").fetchone()[0],
             "repositories": self.target.execute("select count(*) from repository").fetchone()[0],
+            "repo_units": self.target.execute("select count(*) from repo_unit").fetchone()[0],
             "issues": self.target.execute("select count(*) from issue where is_pull = 0").fetchone()[0],
             "pull_requests": self.target.execute("select count(*) from pull_request").fetchone()[0],
             "comments": self.target.execute("select count(*) from comment").fetchone()[0],
@@ -1992,6 +2050,7 @@ class Importer:
             f"- Teams: {len(self.source_teams)}",
             f"- Team memberships: {sum(len(v) for v in self.source_team_users.values())}",
             f"- Repositories: {len(self.source_repositories)}",
+            f"- Repo units: {len(self.source_repo_units)}",
             f"- Issues: {sum(1 for row in self.source_issues if not bool_value(row['is_pull']))}",
             f"- Pull requests: {len(self.source_pull_requests)}",
             f"- Comments: {len(self.source_comments)}",
@@ -2019,6 +2078,7 @@ class Importer:
             f"- Teams: {target_counts['teams']}",
             f"- Team memberships: {target_counts['team_memberships']}",
             f"- Repositories: {target_counts['repositories']}",
+            f"- Repo units: {target_counts['repo_units']}",
             f"- Issues: {target_counts['issues']}",
             f"- Pull requests: {target_counts['pull_requests']}",
             f"- Comments: {target_counts['comments']}",
@@ -2054,6 +2114,14 @@ class Importer:
             f"- Imported activity rows: {self.imported_activity_count}",
             f"- Skipped activity rows after dependency remapping: {self.skipped_activity_count}",
             "",
+            "## Password Notes",
+            "",
+            (
+                "- Password mode: preserved original Gitea password hashes and salts."
+                if self.password_mode == "preserve"
+                else "- Password mode: randomized temporary passwords for testing."
+            ),
+            "",
             "## Warnings",
             "",
         ]
@@ -2075,6 +2143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forgejo-db", required=True, type=Path)
     parser.add_argument("--backup-root", required=True, type=Path)
     parser.add_argument("--forgejo-root", required=True, type=Path)
+    parser.add_argument("--password-mode", choices=("preserve", "randomize"), default="preserve")
     parser.add_argument("--report-path", required=True, type=Path)
     parser.add_argument("--state-path", required=True, type=Path)
     parser.add_argument("--base-url")
@@ -2095,6 +2164,7 @@ def main() -> int:
             forgejo_db=args.forgejo_db,
             backup_root=args.backup_root,
             forgejo_root=args.forgejo_root,
+            password_mode=args.password_mode,
             report_path=args.report_path,
             state_path=args.state_path,
             base_url=args.base_url,

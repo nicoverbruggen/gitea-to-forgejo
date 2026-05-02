@@ -31,6 +31,7 @@ The goal: I can run a script called: `migrate.sh`, which will:
 
 - Spin up a new Forgejo instance with Podman (and remove the running one, if one exists)
 - Set up/migrate data via the ./forgejo directory, which is used for the Podman Forgejo instance.
+- Write generated migration artifacts to `./report`.
 - Make this instance available so I can browse locally to it and see if everything looks OK
 
 (How the runners are set up will be migrated later.)
@@ -45,6 +46,12 @@ Run:
 ./migrate.sh
 ```
 
+Or for disposable test credentials instead of the original user passwords:
+
+```bash
+./migrate.sh --randomize-passwords
+```
+
 This will:
 
 - rebuild `./forgejo`
@@ -54,6 +61,11 @@ This will:
 - replay the source activity feed rows that Forgejo 15 still understands
 - validate the migrated data against the backup and fail if mismatches are found
 - leave Forgejo running on `http://localhost:3000`
+
+Password behavior:
+
+- By default, the migration preserves the original Gitea password hashes, salts, and password algorithm metadata, so imported users keep their existing passwords.
+- `./migrate.sh --randomize-passwords` keeps the old testing behavior and generates temporary passwords instead.
 
 Mirror behavior on the local test instance:
 
@@ -69,16 +81,19 @@ Branding and theme behavior:
 
 Generated outputs:
 
-- `./forgejo/temporary-passwords.txt`
-- `./forgejo/migration-report.md`
-- `./forgejo/validation-report.md`
+- `./report/migration-report.md`
+- `./report/validation-report.md`
+
+Generated only when using `--randomize-passwords`:
+
+- `./report/temporary-passwords.txt`
 
 ## Migrated data
 
 The current migration imports:
 
 - users, emails, SSH keys, avatars, organizations, teams, team memberships, and org memberships
-- repositories, bare Git history, repo avatars, repo metadata, pull mirrors, and push mirror rows
+- repositories, bare Git history, repo avatars, repo metadata, per-repository enabled/disabled repo units, pull mirrors, and push mirror rows
 - issues, issue comments, issue assignees, issue-user state, issue watches, issue content history, labels, milestones, reactions, notifications, follows, and pull requests/reviews if present
 - releases and release attachments
 - stars, watches, and repository collaborators

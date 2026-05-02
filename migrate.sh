@@ -12,18 +12,21 @@ FORGEJO_DATA_DIR="$FORGEJO_DIR/data"
 FORGEJO_CUSTOM_DIR="$FORGEJO_DIR/custom"
 FORGEJO_APP_INI="$FORGEJO_CUSTOM_DIR/conf/app.ini"
 FORGEJO_DB="$FORGEJO_DATA_DIR/forgejo.db"
+REPORT_DIR="$ROOT_DIR/report"
 
 FORGEJO_IMAGE="${FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:15.0-rootless}"
 FORGEJO_CONTAINER_NAME="${FORGEJO_CONTAINER_NAME:-forgejo-migration-local}"
 FORGEJO_HTTP_PORT="${FORGEJO_HTTP_PORT:-3000}"
 FORGEJO_SSH_PORT="${FORGEJO_SSH_PORT:-2222}"
 FORGEJO_BASE_URL="http://localhost:${FORGEJO_HTTP_PORT}"
+PASSWORD_MODE="preserve"
 
-PASSWORD_FILE="$FORGEJO_DIR/temporary-passwords.txt"
-TOKEN_FILE="$FORGEJO_DIR/admin-token.txt"
-REPORT_FILE="$FORGEJO_DIR/migration-report.md"
-VALIDATION_REPORT="$FORGEJO_DIR/validation-report.md"
-STATE_FILE="$FORGEJO_DIR/import-state.json"
+BOOTSTRAP_PASSWORD_FILE="$REPORT_DIR/bootstrap-passwords.txt"
+PASSWORD_FILE="$REPORT_DIR/temporary-passwords.txt"
+TOKEN_FILE="$REPORT_DIR/admin-token.txt"
+REPORT_FILE="$REPORT_DIR/migration-report.md"
+VALIDATION_REPORT="$REPORT_DIR/validation-report.md"
+STATE_FILE="$REPORT_DIR/import-state.json"
 IMPORTER="$ROOT_DIR/scripts/import_gitea_minimal.py"
 VALIDATOR="$ROOT_DIR/scripts/validate_migration.py"
 
@@ -100,7 +103,7 @@ append_doctor_report() {
 }
 
 generate_passwords() {
-    : >"$PASSWORD_FILE"
+    : >"$BOOTSTRAP_PASSWORD_FILE"
 
     while IFS='|' read -r username; do
         password="$(
@@ -113,16 +116,22 @@ print("".join(secrets.choice(alphabet) for _ in range(24)))
 PY
         )"
 
-        printf '%s|%s\n' "$username" "$password" >>"$PASSWORD_FILE"
+        printf '%s|%s\n' "$username" "$password" >>"$BOOTSTRAP_PASSWORD_FILE"
     done < <(
         sqlite3 -separator '|' "$SOURCE_DB" \
             "select name from user where type = 0 order by id"
     )
+
+    if [ "$PASSWORD_MODE" = "randomize" ]; then
+        cp "$BOOTSTRAP_PASSWORD_FILE" "$PASSWORD_FILE"
+    else
+        rm -f "$PASSWORD_FILE"
+    fi
 }
 
 password_for_user() {
     local username="$1"
-    awk -F'|' -v wanted="$username" '$1 == wanted { print $2 }' "$PASSWORD_FILE"
+    awk -F'|' -v wanted="$username" '$1 == wanted { print $2 }' "$BOOTSTRAP_PASSWORD_FILE"
 }
 
 create_local_config() {
@@ -279,6 +288,19 @@ create_cli_users() {
 }
 
 main() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --randomize-passwords)
+                PASSWORD_MODE="randomize"
+                shift
+                ;;
+            *)
+                printf 'Unknown argument: %s\n' "$1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
     require_command podman
     require_command sqlite3
     require_command curl
@@ -302,8 +324,9 @@ main() {
 
     log "Resetting local Forgejo workspace"
     cleanup_container
-    rm -rf "$FORGEJO_DIR"
+    rm -rf "$FORGEJO_DIR" "$REPORT_DIR"
     mkdir -p "$FORGEJO_CUSTOM_DIR/conf" "$FORGEJO_CUSTOM_DIR/templates" "$FORGEJO_DATA_DIR/home" "$FORGEJO_DIR/git"
+    mkdir -p "$REPORT_DIR"
 
     if [ -f "$SOURCE_DIR/custom/templates/home.tmpl" ]; then
         cp "$SOURCE_DIR/custom/templates/home.tmpl" "$FORGEJO_CUSTOM_DIR/templates/home.tmpl"
@@ -362,6 +385,7 @@ main() {
         --forgejo-db "$FORGEJO_DB" \
         --backup-root "$SOURCE_DIR" \
         --forgejo-root "$FORGEJO_DIR" \
+        --password-mode "$PASSWORD_MODE" \
         --report-path "$REPORT_FILE" \
         --state-path "$STATE_FILE"
 
@@ -387,8 +411,11 @@ main() {
         --forgejo-db "$FORGEJO_DB" \
         --backup-root "$SOURCE_DIR" \
         --forgejo-root "$FORGEJO_DIR" \
+        --password-mode "$PASSWORD_MODE" \
         --state-path "$STATE_FILE" \
         --report-path "$VALIDATION_REPORT"
+
+    rm -f "$BOOTSTRAP_PASSWORD_FILE"
 
     log "Restarting Forgejo for local verification"
     podman start "$FORGEJO_CONTAINER_NAME" >/dev/null
@@ -398,7 +425,12 @@ main() {
     printf '\n'
     printf 'Forgejo URL: %s\n' "$FORGEJO_BASE_URL"
     printf 'SSH URL base: ssh://git@localhost:%s/\n' "$FORGEJO_SSH_PORT"
-    printf 'Temporary passwords: %s\n' "$PASSWORD_FILE"
+    if [ "$PASSWORD_MODE" = "randomize" ]; then
+        printf 'Password mode: randomized for testing\n'
+        printf 'Temporary passwords: %s\n' "$PASSWORD_FILE"
+    else
+        printf 'Password mode: preserved from source Gitea backup\n'
+    fi
     printf 'Migration report: %s\n' "$REPORT_FILE"
     printf 'Validation report: %s\n' "$VALIDATION_REPORT"
 }

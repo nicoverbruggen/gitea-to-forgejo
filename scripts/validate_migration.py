@@ -48,6 +48,7 @@ class Validator:
         forgejo_db: Path,
         backup_root: Path,
         forgejo_root: Path,
+        password_mode: str,
         state_path: Path,
         report_path: Path,
     ) -> None:
@@ -55,6 +56,7 @@ class Validator:
         self.forgejo_db = forgejo_db
         self.backup_root = backup_root
         self.forgejo_root = forgejo_root
+        self.password_mode = password_mode
         self.state_path = state_path
         self.report_path = report_path
 
@@ -224,6 +226,7 @@ class Validator:
         self.validate_org_memberships()
         self.validate_teams()
         self.validate_repositories()
+        self.validate_repo_units()
         self.validate_project_and_social_data()
         self.validate_git_repositories()
         self.validate_ssh_keys()
@@ -288,6 +291,10 @@ class Validator:
             for field in fields:
                 self.compare_values(check, f"{username}.{field}", source_row[field], target_row[field])
 
+            if self.password_mode == "preserve":
+                for field in ("passwd", "passwd_hash_algo", "salt", "rands", "must_change_password"):
+                    self.compare_values(check, f"{username}.{field}", source_row[field], target_row[field])
+
         source_emails = self.user_email_map(self.source, source_rows)
         target_emails = self.user_email_map(self.target, target_rows)
         for username in sorted(set(source_rows) & set(target_rows)):
@@ -299,6 +306,10 @@ class Validator:
 
         self.add_note(f"Validated {len(source_rows)} user records and email sets")
         self.add_note("User theme preferences are intentionally normalized to the Forgejo default theme")
+        if self.password_mode == "preserve":
+            self.add_note("User passwords are validated against the original Gitea password hashes")
+        else:
+            self.add_note("User passwords are intentionally randomized for testing and are not compared to source hashes")
 
     def user_email_map(
         self,
@@ -569,6 +580,56 @@ class Validator:
                 self.compare_values(check, f"{label}.{field}", source_row[field], target_row[field])
 
         self.add_note(f"Validated {len(source_rows)} repository metadata rows")
+
+    def validate_repo_units(self) -> None:
+        check = "repo-units"
+        source_repo_keys = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(self.source, "select id, owner_name, lower_name from repository order by id")
+        }
+        target_repo_keys = {
+            row["id"]: (row["owner_name"], row["lower_name"])
+            for row in self.fetch_all(
+                self.target,
+                """
+                select repository.id, owner.name as owner_name, repository.lower_name
+                from repository
+                join user owner on owner.id = repository.owner_id
+                order by repository.id
+                """,
+            )
+        }
+
+        source_rows = {
+            row["id"]: (
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["type"]),
+                normalize_text(row["config"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["everyone_access_mode"]),
+            )
+            for row in self.fetch_all(self.source, "select * from repo_unit order by id")
+        }
+        target_rows = {
+            row["id"]: (
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["type"]),
+                normalize_text(row["config"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["default_permissions"]),
+            )
+            for row in self.fetch_all(self.target, "select * from repo_unit order by id")
+        }
+
+        self.compare_key_sets(check, set(source_rows), set(target_rows))
+        for row_id in sorted(set(source_rows) & set(target_rows)):
+            if source_rows[row_id] != target_rows[row_id]:
+                self.add_failure(
+                    check,
+                    f"repo_unit {row_id} mismatch: expected {source_rows[row_id]!r}, found {target_rows[row_id]!r}",
+                )
+
+        self.add_note(f"Validated {len(source_rows)} repo_unit rows")
 
     def validate_project_and_social_data(self) -> None:
         check = "project-social"
@@ -1875,6 +1936,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forgejo-db", required=True, type=Path)
     parser.add_argument("--backup-root", required=True, type=Path)
     parser.add_argument("--forgejo-root", required=True, type=Path)
+    parser.add_argument("--password-mode", choices=("preserve", "randomize"), default="preserve")
     parser.add_argument("--state-path", required=True, type=Path)
     parser.add_argument("--report-path", required=True, type=Path)
     return parser.parse_args()
@@ -1887,6 +1949,7 @@ def main() -> int:
         forgejo_db=args.forgejo_db,
         backup_root=args.backup_root,
         forgejo_root=args.forgejo_root,
+        password_mode=args.password_mode,
         state_path=args.state_path,
         report_path=args.report_path,
     )
