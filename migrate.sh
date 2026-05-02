@@ -198,9 +198,10 @@ parser.set("service", "DISABLE_REGISTRATION", "true")
 if not parser.has_option("service", "REQUIRE_SIGNIN_VIEW"):
     parser.set("service", "REQUIRE_SIGNIN_VIEW", "false")
 
-# This local verification instance should never mirror to or from remotes.
-parser.set("mirror", "ENABLED", "false")
-parser.set("mirror", "DISABLE_NEW_PULL", "true")
+# This local verification instance should preserve mirror metadata, but it
+# should never queue background pull or push sync jobs against remotes.
+parser.set("mirror", "ENABLED", "true")
+parser.set("mirror", "DISABLE_NEW_PULL", "false")
 parser.set("mirror", "DISABLE_NEW_PUSH", "true")
 parser.set("cron.update_mirrors", "PULL_LIMIT", "0")
 parser.set("cron.update_mirrors", "PUSH_LIMIT", "0")
@@ -302,10 +303,10 @@ main() {
     log "Resetting local Forgejo workspace"
     cleanup_container
     rm -rf "$FORGEJO_DIR"
-    mkdir -p "$FORGEJO_CUSTOM_DIR/conf" "$FORGEJO_DATA_DIR/home" "$FORGEJO_DIR/git"
+    mkdir -p "$FORGEJO_CUSTOM_DIR/conf" "$FORGEJO_CUSTOM_DIR/templates" "$FORGEJO_DATA_DIR/home" "$FORGEJO_DIR/git"
 
-    if [ -d "$SOURCE_DIR/custom" ]; then
-        cp -R "$SOURCE_DIR/custom/." "$FORGEJO_CUSTOM_DIR/"
+    if [ -f "$SOURCE_DIR/custom/templates/home.tmpl" ]; then
+        cp "$SOURCE_DIR/custom/templates/home.tmpl" "$FORGEJO_CUSTOM_DIR/templates/home.tmpl"
     fi
 
     if [ -f "$SOURCE_DIR/data/home/.gitconfig" ]; then

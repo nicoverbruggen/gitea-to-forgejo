@@ -49,11 +49,23 @@ This will:
 
 - rebuild `./forgejo`
 - start a local Forgejo 15.0 instance with Podman
-- import users, organizations, teams, repositories, issues, comments, releases, stars, watches, collaborators, and attachments from `./backup/gitea`
+- import users, organizations, teams, repositories, pull mirrors, push mirror rows, issues, comments, releases, stars, watches, collaborators, and attachments from `./backup/gitea`
 - import the container package registry data that Forgejo 15 can retain
 - replay the source activity feed rows that Forgejo 15 still understands
 - validate the migrated data against the backup and fail if mismatches are found
 - leave Forgejo running on `http://localhost:3000`
+
+Mirror behavior on the local test instance:
+
+- Pull mirrors are imported as real pull mirrors when Forgejo can create them.
+- Push mirror rows are imported too.
+- Scheduled pull and push mirror updates are both disabled locally, so this verification instance does not sync outward or refresh from remotes in the background.
+
+Branding and theme behavior:
+
+- Source Gitea `custom/` styling and asset overrides are not copied into the local Forgejo instance.
+- The only preserved source customization is `custom/templates/home.tmpl`.
+- User theme preferences are not replayed, so the local verification instance uses the default Forgejo theme.
 
 Generated outputs:
 
@@ -61,16 +73,54 @@ Generated outputs:
 - `./forgejo/migration-report.md`
 - `./forgejo/validation-report.md`
 
-## Todo
+## Migrated data
 
-- Based on the migration script, tell me what differences exist in how the data is stored between Gitea -> Forgejo. Is any meaningful data omitted?
-- Decide whether to add watches/collaborators/issue edit history to the user-facing validation summary, since the validator already checks them
+The current migration imports:
+
+- users, emails, SSH keys, avatars, organizations, teams, team memberships, and org memberships
+- repositories, bare Git history, repo avatars, repo metadata, pull mirrors, and push mirror rows
+- issues, issue comments, issue assignees, issue-user state, issue watches, issue content history, labels, milestones, reactions, notifications, follows, and pull requests/reviews if present
+- releases and release attachments
+- stars, watches, and repository collaborators
+- package registry data that Forgejo 15 retains after OCI compatibility cleanup
+- activity feed rows from the `action` table
+
+## Normalized data
+
+Some fields are carried across with Forgejo-side normalization because the schemas are not perfectly identical:
+
+- `issue.created` is derived from Gitea `issue.created_unix`
+- `issue.pin_order` is set to `0`
+- `release.hide_archive_links` is set to `0`
+- `attachment.external_url` is left empty
+- Forgejo 15 prunes dangling OCI `sha256:*` package manifests, files, and blobs during import
+
+## Omitted data
+
+The current transition intentionally omits:
+
+- Gitea Actions runtime data and logs: `action_run*`, `action_task*`, `action_artifact`, schedules, artifacts, variables, and log files
+- runner registration/runtime state: `action_runner*` and related tokens
+- package-manifest rows and blobs that Forgejo 15 itself considers dangling OCI data and removes during startup/import cleanup
+- source Gitea branding/style overrides from `custom/public/*`, including logos, favicons, and `robots.txt`
+
+The current transition also does not preserve a few Gitea-only fields that do not have a meaningful Forgejo 15 target in this workflow:
+
+- `issue.time_estimate`
+- `comment.comment_meta_data`
+- `label.exclusive_order`
+- user theme selections from the source instance
+
+## Gitea 1.26 to Forgejo 15.0
+
+This repository currently targets migration from:
+
+- Gitea `1.26.x` backup data
+- into Forgejo `15.0.x`
 
 ## Nice to have
 
 - Restructure migration so that things are documented clearly so in the future, this migration can be updated (to support newer versions of Gitea / Forgejo in the future)
-- Document clearly we are migrating from Gitea 1.26 to Forgejo 15.0
-- Use Forgejo customizations instead (it's one of the repos: `backup/gitea/repos/nico/forgejo-customize.git`) and use the default Forgejo theme
 
 ## Theming
 

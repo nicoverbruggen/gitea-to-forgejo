@@ -280,7 +280,6 @@ class Validator:
             "avatar_email",
             "use_custom_avatar",
             "diff_view_style",
-            "theme",
             "keep_activity_private",
         ]
         for username in sorted(set(source_rows) & set(target_rows)):
@@ -299,6 +298,7 @@ class Validator:
                 )
 
         self.add_note(f"Validated {len(source_rows)} user records and email sets")
+        self.add_note("User theme preferences are intentionally normalized to the Forgejo default theme")
 
     def user_email_map(
         self,
@@ -772,6 +772,28 @@ class Validator:
         }
         compare_entity("issue-users", source_issue_users, target_issue_users)
 
+        source_issue_watches = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["is_watching"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from issue_watch order by id")
+        }
+        target_issue_watches = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["is_watching"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from issue_watch order by id")
+        }
+        compare_entity("issue-watches", source_issue_watches, target_issue_watches)
+
         source_comments = {
             row["id"]: (
                 normalize_int(row["type"]),
@@ -1050,6 +1072,34 @@ class Validator:
             target_path = self.forgejo_root / "data" / "attachments" / uuid[0] / uuid[1] / uuid
             self.compare_file_contents(check, f"attachment:{normalize_text(row['name'])}", source_path, target_path)
 
+        source_notifications = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                source_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["status"]),
+                normalize_int(row["source"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from notification order by id")
+        }
+        target_notifications = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                target_repo_keys.get(normalize_int(row["repo_id"]), ("", "")),
+                normalize_int(row["status"]),
+                normalize_int(row["source"]),
+                normalize_int(row["issue_id"]),
+                normalize_int(row["comment_id"]),
+                normalize_int(row["created_unix"]),
+                normalize_int(row["updated_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from notification order by id")
+        }
+        compare_entity("notifications", source_notifications, target_notifications)
+
         source_stars = {
             row["id"]: (
                 source_user_names.get(normalize_int(row["uid"]), ""),
@@ -1067,6 +1117,24 @@ class Validator:
             for row in self.fetch_all(self.target, "select * from star order by id")
         }
         compare_entity("stars", source_stars, target_stars)
+
+        source_follows = {
+            row["id"]: (
+                source_user_names.get(normalize_int(row["user_id"]), ""),
+                source_user_names.get(normalize_int(row["follow_id"]), ""),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.source, "select * from follow order by id")
+        }
+        target_follows = {
+            row["id"]: (
+                target_user_names.get(normalize_int(row["user_id"]), ""),
+                target_user_names.get(normalize_int(row["follow_id"]), ""),
+                normalize_int(row["created_unix"]),
+            )
+            for row in self.fetch_all(self.target, "select * from follow order by id")
+        }
+        compare_entity("follows", source_follows, target_follows)
 
         source_watches = {
             row["id"]: (
@@ -1119,8 +1187,11 @@ class Validator:
             f"{len(source_pull_requests)} pull requests, "
             f"{len(source_releases)} releases, "
             f"{len(source_attachments)} attachments, "
+            f"{len(source_notifications)} notifications, "
             f"{len(source_stars)} stars, "
             f"{len(source_watches)} watches, and "
+            f"{len(source_issue_watches)} issue watches, "
+            f"{len(source_follows)} follows, and "
             f"{len(source_collaboration)} collaborators"
         )
 

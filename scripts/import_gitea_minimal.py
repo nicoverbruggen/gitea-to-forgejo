@@ -180,6 +180,7 @@ class Importer:
         self.source_issue_labels = self.fetch_all("select * from issue_label order by id")
         self.source_issue_assignees = self.fetch_all("select * from issue_assignees order by id")
         self.source_issue_users = self.fetch_all("select * from issue_user order by id")
+        self.source_issue_watches = self.fetch_all("select * from issue_watch order by id")
         self.source_comments = self.fetch_all("select * from comment order by id")
         self.source_pull_requests = self.fetch_all("select * from pull_request order by id")
         self.source_reviews = self.fetch_all("select * from review order by id")
@@ -189,8 +190,10 @@ class Importer:
         self.source_releases = self.fetch_all("select * from release order by id")
         self.source_uploads = self.fetch_all("select * from upload order by id")
         self.source_attachments = self.fetch_all("select * from attachment order by id")
+        self.source_notifications = self.fetch_all("select * from notification order by id")
         self.source_stars = self.fetch_all("select * from star order by id")
         self.source_watches = self.fetch_all("select * from watch order by id")
+        self.source_follows = self.fetch_all("select * from follow order by id")
         self.source_collaborations = self.fetch_all("select * from collaboration order by id")
         self.source_mirrors = {
             row["repo_id"]: row for row in self.fetch_all("select * from mirror order by repo_id")
@@ -482,7 +485,6 @@ class Importer:
                     use_custom_avatar = ?,
                     visibility = ?,
                     diff_view_style = ?,
-                    theme = ?,
                     keep_activity_private = ?
                 where id = ?
                 """,
@@ -510,7 +512,6 @@ class Importer:
                     source_user["use_custom_avatar"],
                     source_user["visibility"],
                     source_user["diff_view_style"],
-                    source_user["theme"],
                     source_user["keep_activity_private"],
                     target_user["id"],
                 ),
@@ -868,7 +869,7 @@ class Importer:
     def import_project_and_social_data(self) -> None:
         assert self.target is not None
 
-        log("Replacing issues, pull requests, releases, attachments, stars, watches, and collaborators offline")
+        log("Replacing issues, notifications, follows, releases, stars, watches, and collaborators offline")
         self.copy_attachment_files()
 
         user_id_map = self.build_user_id_map()
@@ -890,10 +891,13 @@ class Importer:
             "comment",
             "issue_assignees",
             "issue_user",
+            "issue_watch",
             "issue_label",
             "attachment",
             "upload",
             "release",
+            "notification",
+            "follow",
             "star",
             "watch",
             "collaboration",
@@ -1062,6 +1066,24 @@ class Importer:
                     issue_user["issue_id"],
                     issue_user["is_read"],
                     issue_user["is_mentioned"],
+                ),
+            )
+
+        for issue_watch in self.source_issue_watches:
+            if issue_watch["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into issue_watch (id, user_id, issue_id, is_watching, created_unix, updated_unix)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    issue_watch["id"],
+                    user_id_map.get(issue_watch["user_id"], 0),
+                    issue_watch["issue_id"],
+                    issue_watch["is_watching"],
+                    issue_watch["created_unix"],
+                    issue_watch["updated_unix"],
                 ),
             )
 
@@ -1412,6 +1434,37 @@ class Importer:
                 ),
             )
 
+        for notification in self.source_notifications:
+            if notification["issue_id"] not in issue_ids:
+                continue
+            self.target.execute(
+                """
+                insert into notification (
+                    id,
+                    user_id,
+                    repo_id,
+                    status,
+                    source,
+                    issue_id,
+                    comment_id,
+                    created_unix,
+                    updated_unix
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    notification["id"],
+                    user_id_map.get(notification["user_id"], 0),
+                    repo_id_map.get(notification["repo_id"], 0),
+                    notification["status"],
+                    notification["source"],
+                    notification["issue_id"],
+                    notification["comment_id"] if notification["comment_id"] in comment_ids else 0,
+                    notification["created_unix"],
+                    notification["updated_unix"],
+                ),
+            )
+
         for star in self.source_stars:
             self.target.execute(
                 "insert into star (id, uid, repo_id, created_unix) values (?, ?, ?, ?)",
@@ -1420,6 +1473,17 @@ class Importer:
                     user_id_map.get(star["uid"], 0),
                     repo_id_map.get(star["repo_id"], 0),
                     star["created_unix"],
+                ),
+            )
+
+        for follow in self.source_follows:
+            self.target.execute(
+                "insert into follow (id, user_id, follow_id, created_unix) values (?, ?, ?, ?)",
+                (
+                    follow["id"],
+                    user_id_map.get(follow["user_id"], 0),
+                    user_id_map.get(follow["follow_id"], 0),
+                    follow["created_unix"],
                 ),
             )
 
@@ -1460,13 +1524,16 @@ class Importer:
                 "attachment",
                 "collaboration",
                 "comment",
+                "follow",
                 "issue",
                 "issue_assignees",
                 "issue_content_history",
                 "issue_label",
                 "issue_user",
+                "issue_watch",
                 "label",
                 "milestone",
+                "notification",
                 "pull_request",
                 "reaction",
                 "release",
@@ -1896,8 +1963,11 @@ class Importer:
             "comments": self.target.execute("select count(*) from comment").fetchone()[0],
             "releases": self.target.execute("select count(*) from release").fetchone()[0],
             "attachments": self.target.execute("select count(*) from attachment").fetchone()[0],
+            "notifications": self.target.execute("select count(*) from notification").fetchone()[0],
             "stars": self.target.execute("select count(*) from star").fetchone()[0],
             "watches": self.target.execute("select count(*) from watch").fetchone()[0],
+            "issue_watches": self.target.execute("select count(*) from issue_watch").fetchone()[0],
+            "follows": self.target.execute("select count(*) from follow").fetchone()[0],
             "collaborators": self.target.execute("select count(*) from collaboration").fetchone()[0],
             "pull_mirrors": self.target.execute("select count(*) from mirror").fetchone()[0],
             "push_mirrors": self.target.execute("select count(*) from push_mirror").fetchone()[0],
@@ -1927,8 +1997,11 @@ class Importer:
             f"- Comments: {len(self.source_comments)}",
             f"- Releases: {len(self.source_releases)}",
             f"- Attachments: {len(self.source_attachments)}",
+            f"- Notifications: {len(self.source_notifications)}",
             f"- Stars: {len(self.source_stars)}",
             f"- Watches: {len(self.source_watches)}",
+            f"- Issue watches: {len(self.source_issue_watches)}",
+            f"- Follows: {len(self.source_follows)}",
             f"- Collaborators: {len(self.source_collaborations)}",
             f"- Pull mirrors: {len(self.source_mirrors)}",
             f"- Push mirrors: {sum(len(v) for v in self.source_push_mirrors.values())}",
@@ -1951,8 +2024,11 @@ class Importer:
             f"- Comments: {target_counts['comments']}",
             f"- Releases: {target_counts['releases']}",
             f"- Attachments: {target_counts['attachments']}",
+            f"- Notifications: {target_counts['notifications']}",
             f"- Stars: {target_counts['stars']}",
             f"- Watches: {target_counts['watches']}",
+            f"- Issue watches: {target_counts['issue_watches']}",
+            f"- Follows: {target_counts['follows']}",
             f"- Collaborators: {target_counts['collaborators']}",
             f"- Pull mirrors: {target_counts['pull_mirrors']} (expected after fallbacks: {expected_pull_mirrors})",
             f"- Push mirrors: {target_counts['push_mirrors']}",
