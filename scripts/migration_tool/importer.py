@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 import sqlite3
 import sys
 import time
+
+FORGEJO_VERSION = os.environ.get("FORGEJO_VERSION", "15.0.1")
 
 from .features import activity, issues, mirrors, organizations, packages, releases, repositories, repo_units, social, users
 from .helpers.api import ForgejoAPI
@@ -400,7 +403,7 @@ class Importer:
             "",
             "## Package Compatibility Notes",
             "",
-            "- Forgejo 15 automatically prunes unreferenced `sha256:*` OCI manifests on startup.",
+            "- Forgejo automatically prunes unreferenced `sha256:*` OCI manifests on startup.",
             f"- Expected retained package versions after compatibility cleanup: {len(self.kept_source_package_versions)}",
             f"- Expected retained package files after compatibility cleanup: {len(self.kept_source_package_files)}",
             f"- Expected retained package blobs after compatibility cleanup: {len(self.kept_source_package_blobs)}",
@@ -430,7 +433,7 @@ class Importer:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Import the minimal Gitea backup shape into Forgejo 15.0")
+    parser = argparse.ArgumentParser(description=f"Import the minimal Gitea backup shape into Forgejo {FORGEJO_VERSION}")
     parser.add_argument("--mode", choices=("api", "finalize"), required=True)
     parser.add_argument("--source-db", required=True, type=Path)
     parser.add_argument("--forgejo-db", required=True, type=Path)

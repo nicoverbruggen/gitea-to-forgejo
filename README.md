@@ -22,7 +22,6 @@ Run:
 Optional environment overrides:
 
 ```bash
-FORGEJO_IMAGE=codeberg.org/forgejo/forgejo:15.0-rootless \
 FORGEJO_CONTAINER_NAME=forgejo-migration-local \
 FORGEJO_HTTP_PORT=3000 \
 FORGEJO_SSH_PORT=2222 \
