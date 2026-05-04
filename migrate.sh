@@ -366,8 +366,14 @@ main() {
     mkdir -p "$FORGEJO_CUSTOM_DIR/conf" "$FORGEJO_CUSTOM_DIR/templates" "$FORGEJO_DATA_DIR/home" "$FORGEJO_DIR/git"
     mkdir -p "$REPORT_DIR" "$BACKUP_DIR"
 
-    if [ -f "$SOURCE_DIR/custom/templates/home.tmpl" ]; then
-        cp "$SOURCE_DIR/custom/templates/home.tmpl" "$FORGEJO_CUSTOM_DIR/templates/home.tmpl"
+    if [ -d "$SOURCE_DIR/custom/templates" ]; then
+        mkdir -p "$FORGEJO_CUSTOM_DIR/templates"
+        cp -R "$SOURCE_DIR/custom/templates/." "$FORGEJO_CUSTOM_DIR/templates/"
+    fi
+
+    if [ -d "$SOURCE_DIR/custom/public" ]; then
+        mkdir -p "$FORGEJO_CUSTOM_DIR/public"
+        cp -R "$SOURCE_DIR/custom/public/." "$FORGEJO_CUSTOM_DIR/public/"
     fi
 
     if [ -f "$SOURCE_DIR/data/home/.gitconfig" ]; then

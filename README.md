@@ -58,6 +58,7 @@ This will:
 
 - Validate login credentials approach (see more below)
 - Copy and test any remaining customizations that are not migrated automatically into `./forgejo/custom`.
+- Review the migrated `custom/templates/` and `custom/public/` overrides under `./forgejo/custom`. The Gitea-era files are copied verbatim, but Forgejo template paths, block names, and asset references can drift between versions, so verify that home/header/footer customizations and any branding assets (logos, favicons, `robots.txt`, etc.) still render correctly before deploying.
 - Enable push and pull in configuration (see more below)
 
 ## Password behavior
@@ -129,6 +130,7 @@ The current migration imports:
 - stars, watches, and repository collaborators
 - package registry data that Forgejo 15 retains after OCI compatibility cleanup
 - activity feed rows from the `action` table
+- source branding and static overrides from `custom/public/*` (logos, favicons, `robots.txt`, etc.)
 
 ## Normalized data
 
@@ -144,7 +146,6 @@ Some fields are carried across with Forgejo-side normalization because the schem
 
 - Gitea Actions runtime state, logs, schedules, artifacts, runner registrations, and related tokens/secrets.
 - OCI package blobs and manifest rows that Forgejo 15 prunes as dangling data during import.
-- Source branding and static overrides from `custom/public/*`, such as logos, favicons, and `robots.txt`.
 - Two-factor authentication state, WebAuthn credentials, and per-user theme selections.
 
 ## Omitted data
@@ -154,7 +155,6 @@ The current transition intentionally omits:
 - Gitea Actions runtime data and logs: `action_run*`, `action_task*`, `action_artifact`, schedules, artifacts, variables, and log files
 - runner registration/runtime state: `action_runner*` and related tokens
 - package-manifest rows and blobs that Forgejo 15 itself considers dangling OCI data and removes during startup/import cleanup
-- source Gitea branding/style overrides from `custom/public/*`, including logos, favicons, and `robots.txt`
 
 The current transition also does not preserve a few Gitea-only fields that do not have a meaningful Forgejo 15 target in this workflow:
 
