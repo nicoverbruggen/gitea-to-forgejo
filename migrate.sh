@@ -251,9 +251,8 @@ parser.set("mirror", "DISABLE_NEW_PUSH", "true")
 parser.set("cron.update_mirrors", "PULL_LIMIT", "0")
 parser.set("cron.update_mirrors", "PUSH_LIMIT", "0")
 
-mailer_items = []
-if parser.has_section("mailer"):
-    mailer_items = list(parser.items("mailer"))
+if not parser.has_section("mailer"):
+    parser.add_section("mailer")
 parser.set("mailer", "ENABLED", "false")
 
 buffer = io.StringIO()
@@ -279,18 +278,8 @@ lines.extend(
     [
         "",
         body,
-        "",
-        "; Original mailer settings from the Gitea backup are preserved below for later reuse.",
-        "; Uncomment and adapt them if you want this local Forgejo instance to send email.",
     ]
 )
-
-if mailer_items:
-    lines.append("; [mailer.backup]")
-    for key, value in mailer_items:
-        lines.append(f"; {key} = {value}")
-else:
-    lines.append("; No source [mailer] section was present in the backup.")
 
 target_path.parent.mkdir(parents=True, exist_ok=True)
 target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

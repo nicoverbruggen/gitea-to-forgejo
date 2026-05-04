@@ -87,7 +87,7 @@ Mirror credential caveats:
 By default, both mails and mirroring are disabled after the migration. This is done so you can verify the data locally, but no stale data will be pulled in, mirrored or emails sent about your local Forgejo instance running on `localhost:3000`.
 
 - Re-enable pull and push mirroring
-- Uncomment mailer configuration
+- Re-enable the mailer
 
 Once the data has been migrated, you need to manually validate the configuration file, and to re-enable pull and push mirroring, change:
 
@@ -105,7 +105,7 @@ These local safety settings are written into `./forgejo/custom/conf/app.ini` so 
 
 If you don't want to customize the defaults, removing these safeguards for the local installation when deploying to your production instance is probably sufficient.
 
-You also need to uncomment the mailer configuration, as it is automatically commented out.
+The mailer section from the Gitea backup is preserved as-is, but `ENABLED` is forced to `false`. To re-enable email on your production instance, set `[mailer] ENABLED = true`.
 
 ## Report
 
